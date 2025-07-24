@@ -348,3 +348,5 @@ const styles = StyleSheet.create({
   moveConfirmBtn: { backgroundColor: '#007AFF', padding: 15, borderRadius: 12, alignItems: 'center' },
   moveConfirmText: { color: '#fff', fontSize: 17, fontWeight: '600' },
 });
+
+//test
