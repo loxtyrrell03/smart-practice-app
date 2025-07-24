@@ -349,4 +349,3 @@ const styles = StyleSheet.create({
   moveConfirmText: { color: '#fff', fontSize: 17, fontWeight: '600' },
 });
 
-//test

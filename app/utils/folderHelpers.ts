@@ -152,13 +152,24 @@ export function deleteFileFromFolder(parentId: string | null | undefined, id: st
   const p = getFolderById(parentId);
   if (p) p.files = p.files.filter(f => f.id !== id);
 }
+export const moveItem = (
+  itemToMove: Item,
+  oldParentId: string | null,
+  newParentId: string | null,
+) => {
+  // Ensure destination exists before removing the item from its current parent
+  const destinationOk = newParentId ? getFolderById(newParentId) !== null : true;
+  if (!destinationOk) {
+    // destination folder no longer exists; abort move
+    return;
+  }
 
-export const moveItem = (itemToMove: Item, oldParentId: string | null, newParentId: string | null) => {
-  if (itemToMove.type === 'folder') {
-    deleteChildFolder(oldParentId, itemToMove.id);
-    addChildFolder(newParentId, itemToMove);
-  } else {
-    deleteFileFromFolder(oldParentId, itemToMove.id);
-    addFileToFolder(newParentId, itemToMove);
-  }
+  if (itemToMove.type === 'folder') {
+    deleteChildFolder(oldParentId, itemToMove.id);
+    addChildFolder(newParentId, itemToMove);
+  } else {
+    deleteFileFromFolder(oldParentId, itemToMove.id);
+    addFileToFolder(newParentId, itemToMove);
+  }
+
 };
