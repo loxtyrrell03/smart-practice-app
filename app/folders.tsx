@@ -106,7 +106,7 @@ export default function FolderScreen({ parentFolder }: { parentFolder: Folder | 
   };
 
   const onMovePress = () => {
-    setMenuState({ visible: false, x: 0, y: 0, item: null });
+    setMenuState(prev => ({ ...prev, visible: false }));
     setMovePath([null]);
     setMoveModalVisible(true);
   };
