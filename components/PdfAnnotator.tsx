@@ -4,6 +4,22 @@ import Svg, { Path, Text as SvgText, Rect } from 'react-native-svg';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import Pdf from 'react-native-pdf';
 
+function pathContainsPoint(d: string, x: number, y: number, threshold = 10) {
+  const coords = d.match(/[-\d.]+/g)?.map(Number);
+  if (!coords) return false;
+  const xs: number[] = [];
+  const ys: number[] = [];
+  for (let i = 0; i < coords.length; i += 2) {
+    xs.push(coords[i]);
+    ys.push(coords[i + 1]);
+  }
+  const minX = Math.min(...xs) - threshold;
+  const maxX = Math.max(...xs) + threshold;
+  const minY = Math.min(...ys) - threshold;
+  const maxY = Math.max(...ys) + threshold;
+  return x >= minX && x <= maxX && y >= minY && y <= maxY;
+}
+
 interface Props {
   uri: string;
   onClose: () => void;
@@ -18,6 +34,9 @@ export default function PdfAnnotator({ uri, onClose }: Props) {
   const [currentPath, setCurrentPath] = useState('');
   const [mode, setMode] = useState<'draw' | 'text' | 'erase'>('draw');
   const [drawColor, setDrawColor] = useState('#ff0000');
+  // keep track of the color that was active when a stroke started so that
+  // switching colours mid-stroke doesn't modify the stroke colour
+  const activeColor = useRef(drawColor);
   const [text, setText] = useState('');
   const [textRect, setTextRect] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
   const [drawingRect, setDrawingRect] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
@@ -30,11 +49,20 @@ export default function PdfAnnotator({ uri, onClose }: Props) {
       onPanResponderGrant: (e: GestureResponderEvent) => {
         const { locationX, locationY } = e.nativeEvent;
         if (mode === 'draw') {
+          activeColor.current = drawColor;
           setCurrentPath(`M${locationX},${locationY}`);
         } else if (mode === 'text') {
           setDrawingRect({ x: locationX, y: locationY, width: 0, height: 0 });
         } else if (mode === 'erase') {
-          setPaths((ps: DrawPath[]) => ps.slice(0, -1));
+          setPaths((ps: DrawPath[]) => {
+            const idx = ps.findIndex(p => pathContainsPoint(p.d, locationX, locationY));
+            if (idx !== -1) {
+              const copy = [...ps];
+              copy.splice(idx, 1);
+              return copy;
+            }
+            return ps;
+          });
         }
       },
       onPanResponderMove: (e: GestureResponderEvent) => {
@@ -47,12 +75,22 @@ export default function PdfAnnotator({ uri, onClose }: Props) {
             width: locationX - drawingRect.x,
             height: locationY - drawingRect.y,
           });
+        } else if (mode === 'erase') {
+          setPaths((ps: DrawPath[]) => {
+            const idx = ps.findIndex(p => pathContainsPoint(p.d, locationX, locationY));
+            if (idx !== -1) {
+              const copy = [...ps];
+              copy.splice(idx, 1);
+              return copy;
+            }
+            return ps;
+          });
         }
       },
       onPanResponderRelease: () => {
         if (mode === 'draw') {
           if (currentPath) {
-            setPaths((ps: DrawPath[]) => [...ps, { d: currentPath, color: drawColor }]);
+            setPaths((ps: DrawPath[]) => [...ps, { d: currentPath, color: activeColor.current }]);
             setCurrentPath('');
           }
         } else if (mode === 'text' && drawingRect) {
@@ -89,7 +127,7 @@ export default function PdfAnnotator({ uri, onClose }: Props) {
         <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
           <Text style={styles.btnText}>Close</Text>
         </TouchableOpacity>
-        <TouchableOpacity onPress={() => setMode('draw')} style={styles.headerBtn} {...panResponder.panHandlers}>
+        <TouchableOpacity onPress={() => setMode('draw')} style={styles.headerBtn}>
           <Ionicons name="pencil" size={20} color={mode === 'draw' ? '#007AFF' : '#444'} />
         </TouchableOpacity>
         <TouchableOpacity onPress={() => setMode('text')} style={styles.headerBtn}>
@@ -109,7 +147,7 @@ export default function PdfAnnotator({ uri, onClose }: Props) {
         <Pdf source={{ uri }} style={styles.pdf} />
         <Svg style={StyleSheet.absoluteFill}>
           {paths.map((p: DrawPath, i: number) => <Path key={i} d={p.d} stroke={p.color} strokeWidth={2} fill="none" />)}
-          {currentPath ? <Path d={currentPath} stroke={drawColor} strokeWidth={2} fill="none" /> : null}
+          {currentPath ? <Path d={currentPath} stroke={activeColor.current} strokeWidth={2} fill="none" /> : null}
           {texts.map((t: TextNote, i: number) => (
             <React.Fragment key={i}>
               <Rect x={t.x} y={t.y} width={t.width} height={t.height} stroke={selectedText === i ? '#ff9900' : 'blue'} strokeWidth={1} fill="transparent" onPress={() => { setSelectedText(i); setText(t.text); setTextRect(t); setMode('text'); }} />
