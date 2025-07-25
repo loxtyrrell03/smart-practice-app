@@ -1,7 +1,7 @@
 import React, { useRef, useState } from 'react';
 import { PanResponder, StyleSheet, Text, TextInput, TouchableOpacity, View, Platform, StatusBar, GestureResponderEvent } from 'react-native';
 import Svg, { Path, Text as SvgText, Rect } from 'react-native-svg';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import Pdf from 'react-native-pdf';
 
 interface Props {
@@ -96,7 +96,7 @@ export default function PdfAnnotator({ uri, onClose }: Props) {
           <Ionicons name="text" size={20} color={mode === 'text' ? '#007AFF' : '#444'} />
         </TouchableOpacity>
         <TouchableOpacity onPress={() => setMode('erase')} style={styles.headerBtn}>
-          <Ionicons name="eraser" size={20} color={mode === 'erase' ? '#007AFF' : '#444'} />
+          <MaterialCommunityIcons name="eraser" size={20} color={mode === 'erase' ? '#007AFF' : '#444'} />
         </TouchableOpacity>
       </View>
       <View style={styles.colorRow}>
