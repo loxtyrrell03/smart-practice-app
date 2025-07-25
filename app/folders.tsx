@@ -5,7 +5,8 @@
 import { Ionicons, MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
 import { useRouter } from 'expo-router';
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useCallback } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   ActionSheetIOS,
   Alert,
@@ -61,8 +62,15 @@ export default function FolderScreen({ parentFolder }: { parentFolder: Folder | 
   // [RESTORED] State for sorting
   const [sortOpen, setSortOpen] = useState(false);
   const [sortOrder, setSortOrder] = useState<'name-asc' | 'name-desc' | 'newest' | 'oldest'>('name-asc');
-  
+
   const currentMoveFolder = movePath[movePath.length - 1];
+
+  // Refresh list whenever the screen gains focus to reflect any moves
+  useFocusEffect(
+    useCallback(() => {
+      setRefreshKey(k => k + 1);
+    }, [])
+  );
 
   /* ---------- derived data ---------- */
   const { name: title, path: subtitle } = getFolderPath(parentFolder?.id ?? null);
