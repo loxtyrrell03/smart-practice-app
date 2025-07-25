@@ -1,7 +1,18 @@
 import React, { useRef, useState } from 'react';
-import { PanResponder, StyleSheet, Text, TextInput, TouchableOpacity, View, Platform, StatusBar } from 'react-native';
+import {
+  PanResponder,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+  Platform,
+  StatusBar,
+} from 'react-native';
 import Svg, { Path, Text as SvgText } from 'react-native-svg';
 import Pdf from 'react-native-pdf';
+import * as FileSystem from 'expo-file-system';
+import { PDFDocument, rgb } from 'pdf-lib';
 
 interface Props {
   uri: string;
@@ -19,6 +30,7 @@ export default function PdfAnnotator({ uri, onClose }: Props) {
   const [text, setText] = useState('');
   const [textPos, setTextPos] = useState<{ x: number; y: number } | null>(null);
   const [texts, setTexts] = useState<TextNote[]>([]);
+  const [viewerSize, setViewerSize] = useState({ width: 1, height: 1 });
 
   const panResponder = useRef(
     PanResponder.create({
@@ -55,21 +67,75 @@ export default function PdfAnnotator({ uri, onClose }: Props) {
     setAddingText(false);
   };
 
+  const transformPath = (d: string, sx: number, sy: number, height: number) => {
+    return d
+      .split(' ')
+      .map(seg => {
+        const [cmd, coords] = [seg[0], seg.slice(1)];
+        if (!coords) return cmd;
+        const [x, y] = coords.split(',').map(Number);
+        const nx = (x * sx).toFixed(2);
+        const ny = (height - y) * sy;
+        return `${cmd}${nx},${ny.toFixed(2)}`;
+      })
+      .join(' ');
+  };
+
+  const saveAnnotations = async () => {
+    try {
+      const base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+      const pdfDoc = await PDFDocument.load(base64);
+      const page = pdfDoc.getPages()[0];
+      const wScale = page.getWidth() / viewerSize.width;
+      const hScale = page.getHeight() / viewerSize.height;
+
+      paths.forEach(p => {
+        const tPath = transformPath(p.d, wScale, hScale, viewerSize.height);
+        page.drawSvgPath(tPath, { borderColor: rgb(1, 0, 0), borderWidth: 2 });
+      });
+
+      texts.forEach(t => {
+        page.drawText(t.text, {
+          x: t.x * wScale,
+          y: page.getHeight() - t.y * hScale,
+          size: 16,
+          color: rgb(0, 0, 1),
+        });
+      });
+
+      const bytes = await pdfDoc.saveAsBase64();
+      await FileSystem.writeAsStringAsync(uri, bytes, { encoding: FileSystem.EncodingType.Base64 });
+    } catch (e) {
+      console.warn('Save failed', e);
+    }
+  };
+
   return (
     <View style={styles.container}>
       <View style={[styles.header, { paddingTop: safeTop }]}>
         <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
           <Text style={styles.btnText}>Close</Text>
         </TouchableOpacity>
-        <TouchableOpacity onPress={() => setAddingText(false)} style={styles.headerBtn} {...panResponder.panHandlers}>
-          <Text style={styles.btnText}>Draw</Text>
-        </TouchableOpacity>
-        <TouchableOpacity onPress={() => { setAddingText(true); }} style={styles.headerBtn}>
-          <Text style={styles.btnText}>Add Text</Text>
-        </TouchableOpacity>
+        <View style={styles.headerActions}>
+          <TouchableOpacity onPress={saveAnnotations} style={styles.headerBtn}>
+            <Text style={styles.btnText}>Save</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => setAddingText(false)} style={styles.headerBtn} {...panResponder.panHandlers}>
+            <Text style={styles.btnText}>Draw</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => { setAddingText(true); }} style={styles.headerBtn}>
+            <Text style={styles.btnText}>Add Text</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
-      <View style={styles.viewer} onStartShouldSetResponder={() => addingText} onResponderRelease={handleAddText} {...(!addingText ? panResponder.panHandlers : {})}>
+      <View
+        style={styles.viewer}
+        onLayout={e => setViewerSize({ width: e.nativeEvent.layout.width, height: e.nativeEvent.layout.height })}
+        onStartShouldSetResponder={() => addingText}
+        onResponderRelease={handleAddText}
+        {...(!addingText ? panResponder.panHandlers : {})}
+      >
         <Pdf source={{ uri }} style={styles.pdf} />
         <Svg style={StyleSheet.absoluteFill}>
           {paths.map((p, i) => <Path key={i} d={p.d} stroke="red" strokeWidth={2} fill="none" />)}
@@ -93,7 +159,18 @@ export default function PdfAnnotator({ uri, onClose }: Props) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#fff' },
-  header: { flexDirection: 'row', justifyContent: 'space-between', padding: 10, backgroundColor: '#f5f5f5' },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    padding: 10,
+    backgroundColor: 'rgba(245,245,245,0.9)',
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 1,
+  },
+  headerActions: { flexDirection: 'row' },
   closeBtn: { padding: 10 },
   headerBtn: { padding: 10 },
   btnText: { color: '#007AFF', fontWeight: 'bold' },
