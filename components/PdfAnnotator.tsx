@@ -1,6 +1,19 @@
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import React, { useRef, useState } from 'react';
-import { GestureResponderEvent, PanResponder, Platform, StatusBar, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  GestureResponderEvent,
+  PanResponder,
+  Platform,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+  Modal,
+} from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { ColorPicker } from 'react-native-color-picker';
 import Pdf from 'react-native-pdf';
 import Svg, { Path, Rect, Text as SvgText } from 'react-native-svg';
 
@@ -43,8 +56,9 @@ interface Props {
   onClose: () => void;
 }
 
-type DrawPath = { d: string; color: string };
+type DrawPath = { id: string; d: string; color: string };
 type TextNote = {
+  id: string;
   text: string;
   x: number;
   y: number;
@@ -61,16 +75,70 @@ export default function PdfAnnotator({ uri, pdfId, onClose }: Props) {
   const [drawColor, setDrawColor] = useState('#ff0000');
   const activeColor = useRef(drawColor);
 
+  const STORAGE_KEY = `annotations-${pdfId}`;
+  const historyRef = useRef<{ type: 'path' | 'text'; id: string }[]>([]);
+  const [pickerVisible, setPickerVisible] = useState(false);
+
   const [texts, setTexts] = useState<TextNote[]>([]);
   const [selectedTextIndex, setSelectedTextIndex] = useState<number | null>(null);
   const [textInput, setTextInput] = useState('');
   const [textRect, setTextRect] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
   const [drawingRect, setDrawingRect] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
 
+  const undoLast = () => {
+    const last = historyRef.current.pop();
+    if (!last) return;
+    if (last.type === 'path') {
+      setPaths(prev => prev.filter(p => p.id !== last.id));
+    } else {
+      setTexts(prev => prev.filter(t => t.id !== last.id));
+    }
+  };
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const stored = await AsyncStorage.getItem(STORAGE_KEY);
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          setPaths(parsed.paths || []);
+          setTexts(parsed.texts || []);
+          historyRef.current = [
+            ...(parsed.paths || []).map((p: DrawPath) => ({ type: 'path' as const, id: p.id })),
+            ...(parsed.texts || []).map((t: TextNote) => ({ type: 'text' as const, id: t.id })),
+          ];
+        }
+      } catch (e) {
+        console.warn('Failed to load annotations', e);
+      }
+    })();
+  }, [STORAGE_KEY]);
+
+  useEffect(() => {
+    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify({ paths, texts })).catch(e => console.warn('Save error', e));
+  }, [paths, texts, STORAGE_KEY]);
+
   const erasePath = (x: number, y: number) => {
-    setPaths(prevPaths =>
-      prevPaths.filter(p => !pathContainsPoint(p.d, x, y))
-    );
+    setPaths(prevPaths => {
+      const remaining = prevPaths.filter(p => !pathContainsPoint(p.d, x, y));
+      if (remaining.length !== prevPaths.length) {
+        const removed = prevPaths.find(p => !remaining.includes(p));
+        if (removed) {
+          historyRef.current = historyRef.current.filter(h => !(h.type === 'path' && h.id === removed.id));
+        }
+      }
+      return remaining;
+    });
+    setTexts(prevTexts => {
+      const remaining = prevTexts.filter(t => !rectContainsPoint(t, x, y));
+      if (remaining.length !== prevTexts.length) {
+        const removed = prevTexts.find(t => !remaining.includes(t));
+        if (removed) {
+          historyRef.current = historyRef.current.filter(h => !(h.type === 'text' && h.id === removed.id));
+        }
+      }
+      return remaining;
+    });
   };
 
   const panResponder = useRef(
@@ -108,7 +176,10 @@ export default function PdfAnnotator({ uri, pdfId, onClose }: Props) {
       },
       onPanResponderRelease: () => {
         if (mode === 'draw' && currentPath) {
-          setPaths(prevPaths => [...prevPaths, { d: currentPath, color: activeColor.current }]);
+          const id = Date.now().toString();
+          const newPath: DrawPath = { id, d: currentPath, color: activeColor.current };
+          setPaths(prevPaths => [...prevPaths, newPath]);
+          historyRef.current.push({ type: 'path', id });
           setCurrentPath(null);
         } else if (mode === 'text' && drawingRect) {
           const finalRect = {
@@ -129,7 +200,9 @@ export default function PdfAnnotator({ uri, pdfId, onClose }: Props) {
 
   const handleConfirmText = () => {
     if (textRect && textInput.trim()) {
+      const id = Date.now().toString();
       const newText: TextNote = {
+        id,
         text: textInput,
         ...textRect,
         color: drawColor,
@@ -141,6 +214,7 @@ export default function PdfAnnotator({ uri, pdfId, onClose }: Props) {
         setTexts(prevTexts => prevTexts.map((t, index) => index === selectedTextIndex ? newText : t));
       } else {
         setTexts(prevTexts => [...prevTexts, newText]);
+        historyRef.current.push({ type: 'text', id });
       }
     }
     setTextInput('');
@@ -158,7 +232,11 @@ export default function PdfAnnotator({ uri, pdfId, onClose }: Props) {
 
   const handleDeleteText = () => {
     if (selectedTextIndex !== null) {
-      setTexts(ts => ts.filter((_, idx) => idx !== selectedTextIndex));
+      setTexts(ts => {
+        const removed = ts[selectedTextIndex!];
+        historyRef.current = historyRef.current.filter(h => !(h.type === 'text' && h.id === removed.id));
+        return ts.filter((_, idx) => idx !== selectedTextIndex);
+      });
       setSelectedTextIndex(null);
       setTextInput('');
       setTextRect(null);
@@ -182,6 +260,9 @@ export default function PdfAnnotator({ uri, pdfId, onClose }: Props) {
             <TouchableOpacity onPress={() => setMode('erase')} style={styles.headerBtn}>
                 <MaterialCommunityIcons name="eraser" size={24} color={mode === 'erase' ? '#007AFF' : '#444'} />
             </TouchableOpacity>
+            <TouchableOpacity onPress={undoLast} style={styles.headerBtn}>
+                <Ionicons name="arrow-undo" size={24} color="#444" />
+            </TouchableOpacity>
         </View>
       </View>
 
@@ -190,6 +271,9 @@ export default function PdfAnnotator({ uri, pdfId, onClose }: Props) {
           {['#ff0000', '#00aa00', '#0000ff', '#000000'].map((c) => (
             <TouchableOpacity key={c} onPress={() => setDrawColor(c)} style={[styles.colorSwatch, { backgroundColor: c, borderColor: drawColor === c ? '#007AFF' : '#fff' }]} />
           ))}
+          <TouchableOpacity onPress={() => setPickerVisible(true)} style={[styles.colorSwatch, { justifyContent: 'center', alignItems: 'center' }]}> 
+            <Ionicons name="color-palette" size={20} color="#444" />
+          </TouchableOpacity>
         </View>
       )}
 
@@ -231,6 +315,20 @@ export default function PdfAnnotator({ uri, pdfId, onClose }: Props) {
           )}
         </View>
       )}
+
+      <Modal visible={pickerVisible} transparent animationType="fade" onRequestClose={() => setPickerVisible(false)}>
+        <View style={styles.pickerOverlay}>
+          <View style={styles.colorPicker}>
+            <ColorPicker
+              onColorSelected={c => {
+                setDrawColor(c);
+                setPickerVisible(false);
+              }}
+              style={{ flex: 1 }}
+            />
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
