@@ -108,14 +108,14 @@ export default function PdfAnnotator({ uri, pdfId, onClose }: Props) {
             ...(parsed.texts || []).map((t: TextNote) => ({ type: 'text' as const, id: t.id })),
           ];
         }
-      } catch (e) {
+      } catch (e: unknown) {
         console.warn('Failed to load annotations', e);
       }
     })();
   }, [STORAGE_KEY]);
 
   useEffect(() => {
-    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify({ paths, texts })).catch(e => console.warn('Save error', e));
+    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify({ paths, texts })).catch((e: unknown) => console.warn('Save error', e));
   }, [paths, texts, STORAGE_KEY]);
 
   const erasePath = (x: number, y: number) => {
@@ -320,7 +320,7 @@ export default function PdfAnnotator({ uri, pdfId, onClose }: Props) {
         <View style={styles.pickerOverlay}>
           <View style={styles.colorPicker}>
             <ColorPicker
-              onColorSelected={c => {
+              onColorSelected={(c: string) => {
                 setDrawColor(c);
                 setPickerVisible(false);
               }}
