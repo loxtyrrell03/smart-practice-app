@@ -22,7 +22,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { WebView } from 'react-native-webview';
+import PdfAnnotator from '../components/PdfAnnotator';
 
 import {
   Folder,
@@ -245,12 +245,9 @@ export default function FolderScreen({ parentFolder }: { parentFolder: Folder | 
       </Modal>
 
       <Modal visible={pdfViewerOpen} animationType="slide" onRequestClose={() => setPdfViewerOpen(false)}>
-        <View>
-          <TouchableOpacity style={styles.pdfViewerCloseButton} onPress={() => setPdfViewerOpen(false)}>
-            <Ionicons name="close-circle" size={30} color="#007AFF" />
-          </TouchableOpacity>
-          {currentPdfUri && <WebView source={{ uri: currentPdfUri }} style={styles.pdfWebView} />}
-        </View>
+        {currentPdfUri && (
+          <PdfAnnotator uri={currentPdfUri} onClose={() => setPdfViewerOpen(false)} />
+        )}
       </Modal>
 
       <Modal visible={menuState.visible} transparent animationType="fade" onRequestClose={() => setMenuState({ ...menuState, visible: false })}>
@@ -329,8 +326,7 @@ const styles = StyleSheet.create({
   modalBtns: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 22 },
   cancel: { marginRight: 18, fontSize: 16, color: '#555' },
   create: { color: '#007AFF', fontSize: 16, fontWeight: 'bold' },
-  pdfWebView: { width: '100%', height: '100%' },
-  pdfViewerCloseButton: { position: 'absolute', top: 50, right: 20, zIndex: 1, backgroundColor: 'rgba(255,255,255,0.7)', borderRadius: 15, padding: 2 },
+  
   menuOverlay: { flex: 1 },
   itemMenu: { position: 'absolute', backgroundColor: 'white', borderRadius: 8, paddingVertical: 5, width: 120, elevation: 5, shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 5, shadowOffset: { width: 0, height: 2 } },
   itemMenuOption: { paddingVertical: 12, paddingHorizontal: 15 },
