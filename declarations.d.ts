@@ -15,3 +15,5 @@ declare module 'react-native-color-picker' {
   }
   export class ColorPicker extends React.Component<ColorPickerProps> {}
 }
+
+declare module 'react-native-color-palette';
