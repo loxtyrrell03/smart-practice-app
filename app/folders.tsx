@@ -54,7 +54,7 @@ export default function FolderScreen({ parentFolder }: { parentFolder: Folder | 
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState('');
   const [pdfViewerOpen, setPdfViewerOpen] = useState(false);
-  const [currentPdfUri, setCurrentPdfUri] = useState<string | null>(null);
+  const [currentPdf, setCurrentPdf] = useState<{id: string; uri: string} | null>(null);
   const [menuState, setMenuState] = useState<{ visible: boolean; x: number; y: number; item: Item | null }>({ visible: false, x: 0, y: 0, item: null });
   const [moveModalVisible, setMoveModalVisible] = useState(false);
   const [movePath, setMovePath] = useState<(Folder | null)[]>([null]);
@@ -169,8 +169,8 @@ export default function FolderScreen({ parentFolder }: { parentFolder: Folder | 
     }
   };
   
-  const openPdfViewer = (uri: string) => {
-    setCurrentPdfUri(uri);
+  const openPdfViewer = (pdf: PdfFile) => {
+    setCurrentPdf(pdf);
     setPdfViewerOpen(true);
   };
 
@@ -231,7 +231,7 @@ export default function FolderScreen({ parentFolder }: { parentFolder: Folder | 
                 style={styles.tilePress} 
                 onPress={() => item.type === 'folder' 
                     ? router.push({ pathname: '/folder/[id]', params: { id: item.id } })
-                    : openPdfViewer(item.uri)
+                    : openPdfViewer(item as PdfFile)
                 }
               >
                 <Ionicons name={item.type === 'folder' ? "folder" : "document"} size={28} color={item.type === 'folder' ? "#62a0ea" : "#FF5252"} style={{ marginBottom: 6 }} />
@@ -252,9 +252,17 @@ export default function FolderScreen({ parentFolder }: { parentFolder: Folder | 
         </View></View>
       </Modal>
 
-      <Modal visible={pdfViewerOpen} animationType="slide" onRequestClose={() => setPdfViewerOpen(false)}>
-        {currentPdfUri && (
-          <PdfAnnotator uri={currentPdfUri} onClose={() => setPdfViewerOpen(false)} />
+      <Modal
+        visible={pdfViewerOpen}
+        animationType="slide"
+        onRequestClose={() => setPdfViewerOpen(false)}
+      >
+        {currentPdf && (
+          <PdfAnnotator
+            uri={currentPdf.uri}
+            pdfId={currentPdf.id}
+            onClose={() => setPdfViewerOpen(false)}
+          />
         )}
       </Modal>
 

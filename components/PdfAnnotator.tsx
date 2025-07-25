@@ -1,8 +1,22 @@
-import React, { useRef, useState } from 'react';
-import { PanResponder, StyleSheet, Text, TextInput, TouchableOpacity, View, Platform, StatusBar, GestureResponderEvent } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  GestureResponderEvent,
+  Modal,
+  PanResponder,
+  Platform,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import Svg, { Path, Text as SvgText, Rect } from 'react-native-svg';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import Pdf from 'react-native-pdf';
+import { ColorPicker as RNColorPicker } from 'react-native-color-picker';
+const ColorPickerComponent: any = RNColorPicker;
+import * as FileSystem from 'expo-file-system';
 
 function pathContainsPoint(d: string, x: number, y: number, threshold = 10) {
   const coords = d.match(/[-\d.]+/g)?.map(Number);
@@ -20,15 +34,36 @@ function pathContainsPoint(d: string, x: number, y: number, threshold = 10) {
   return x >= minX && x <= maxX && y >= minY && y <= maxY;
 }
 
+function rectContainsPoint(
+  rect: { x: number; y: number; width: number; height: number },
+  x: number,
+  y: number,
+  threshold = 10
+) {
+  const left = Math.min(rect.x, rect.x + rect.width) - threshold;
+  const right = Math.max(rect.x, rect.x + rect.width) + threshold;
+  const top = Math.min(rect.y, rect.y + rect.height) - threshold;
+  const bottom = Math.max(rect.y, rect.y + rect.height) + threshold;
+  return x >= left && x <= right && y >= top && y <= bottom;
+}
+
 interface Props {
   uri: string;
+  pdfId: string;
   onClose: () => void;
 }
 
 type DrawPath = { d: string; color: string };
-type TextNote = { text: string; x: number; y: number; width: number; height: number };
+type TextNote = {
+  text: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  color: string;
+};
 
-export default function PdfAnnotator({ uri, onClose }: Props) {
+export default function PdfAnnotator({ uri, pdfId, onClose }: Props) {
   const safeTop = Platform.OS === 'ios' ? 44 : StatusBar.currentHeight || 20;
   const [paths, setPaths] = useState<DrawPath[]>([]);
   const [currentPath, setCurrentPath] = useState('');
@@ -42,6 +77,36 @@ export default function PdfAnnotator({ uri, onClose }: Props) {
   const [drawingRect, setDrawingRect] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
   const [texts, setTexts] = useState<TextNote[]>([]);
   const [selectedText, setSelectedText] = useState<number | null>(null);
+  const [pickerVisible, setPickerVisible] = useState(false);
+
+  const annotationPath = `${FileSystem.documentDirectory}annotations/${encodeURIComponent(pdfId)}.json`;
+
+  useEffect(() => {
+    (async () => {
+      try {
+        await FileSystem.makeDirectoryAsync(`${FileSystem.documentDirectory}annotations`, { intermediates: true });
+        const data = await FileSystem.readAsStringAsync(annotationPath);
+        const parsed = JSON.parse(data);
+        setPaths(parsed.paths || []);
+        setTexts(parsed.texts || []);
+      } catch (e) {
+        // no saved annotations yet
+      }
+    })();
+  }, [annotationPath]);
+
+  useEffect(() => {
+    (async () => {
+      const data = JSON.stringify({ paths, texts });
+      try {
+        await FileSystem.writeAsStringAsync(annotationPath, data, {
+          encoding: FileSystem.EncodingType.UTF8,
+        });
+      } catch (e) {
+        // ignore write errors
+      }
+    })();
+  }, [paths, texts, annotationPath]);
 
   const panResponder = useRef(
     PanResponder.create({
@@ -62,6 +127,15 @@ export default function PdfAnnotator({ uri, onClose }: Props) {
               return copy;
             }
             return ps;
+          });
+          setTexts((ts: TextNote[]) => {
+            const idx = ts.findIndex(t => rectContainsPoint(t, locationX, locationY));
+            if (idx !== -1) {
+              const copy = [...ts];
+              copy.splice(idx, 1);
+              return copy;
+            }
+            return ts;
           });
         }
       },
@@ -85,6 +159,15 @@ export default function PdfAnnotator({ uri, onClose }: Props) {
             }
             return ps;
           });
+          setTexts((ts: TextNote[]) => {
+            const idx = ts.findIndex(t => rectContainsPoint(t, locationX, locationY));
+            if (idx !== -1) {
+              const copy = [...ts];
+              copy.splice(idx, 1);
+              return copy;
+            }
+            return ts;
+          });
         }
       },
       onPanResponderRelease: () => {
@@ -101,6 +184,16 @@ export default function PdfAnnotator({ uri, onClose }: Props) {
     })
   ).current;
 
+  const undoLast = () => {
+    if (paths.length > 0) {
+      setPaths(p => p.slice(0, -1));
+      return;
+    }
+    if (texts.length > 0) {
+      setTexts(t => t.slice(0, -1));
+    }
+  };
+
 
   const confirmText = () => {
     if (textRect && text.trim()) {
@@ -109,10 +202,20 @@ export default function PdfAnnotator({ uri, onClose }: Props) {
       setTexts((ts: TextNote[]) => {
         if (selectedText !== null) {
           const copy = [...ts];
-          copy[selectedText] = { text, x: textRect.x, y: textRect.y, width: w, height: h };
+          copy[selectedText] = {
+            ...copy[selectedText],
+            text,
+            x: textRect.x,
+            y: textRect.y,
+            width: w,
+            height: h,
+          };
           return copy;
         }
-        return [...ts, { text, x: textRect.x, y: textRect.y, width: w, height: h }];
+        return [
+          ...ts,
+          { text, x: textRect.x, y: textRect.y, width: w, height: h, color: drawColor },
+        ];
       });
     }
     setText('');
@@ -133,14 +236,31 @@ export default function PdfAnnotator({ uri, onClose }: Props) {
         <TouchableOpacity onPress={() => setMode('text')} style={styles.headerBtn}>
           <Ionicons name="text" size={20} color={mode === 'text' ? '#007AFF' : '#444'} />
         </TouchableOpacity>
-        <TouchableOpacity onPress={() => setMode('erase')} style={styles.headerBtn}>
+        <TouchableOpacity onPress={undoLast} style={styles.headerBtn}>
+          <MaterialCommunityIcons name="undo" size={20} color="#444" />
+        </TouchableOpacity>
+        <TouchableOpacity onPress={() => setMode(mode === 'erase' ? 'draw' : 'erase')} style={styles.headerBtn}>
           <MaterialCommunityIcons name="eraser" size={20} color={mode === 'erase' ? '#007AFF' : '#444'} />
         </TouchableOpacity>
       </View>
+      <Modal visible={pickerVisible} transparent animationType="fade" onRequestClose={() => setPickerVisible(false)}>
+        <View style={styles.pickerOverlay}>
+          <ColorPickerComponent
+            onColorSelected={(c: string) => {
+              setPickerVisible(false);
+              setDrawColor(c);
+            }}
+            style={styles.colorPicker}
+          />
+        </View>
+      </Modal>
       <View style={styles.colorRow}>
         {['#ff0000', '#00aa00', '#0000ff'].map((c) => (
           <TouchableOpacity key={c} onPress={() => setDrawColor(c)} style={[styles.colorSwatch, { backgroundColor: c, borderColor: drawColor === c ? '#000' : '#fff' }]} />
         ))}
+        <TouchableOpacity onPress={() => setPickerVisible(true)} style={styles.headerBtn}>
+          <MaterialCommunityIcons name="palette" size={20} color="#444" />
+        </TouchableOpacity>
       </View>
 
       <View style={styles.viewer} {...panResponder.panHandlers}>
@@ -150,8 +270,24 @@ export default function PdfAnnotator({ uri, onClose }: Props) {
           {currentPath ? <Path d={currentPath} stroke={activeColor.current} strokeWidth={2} fill="none" /> : null}
           {texts.map((t: TextNote, i: number) => (
             <React.Fragment key={i}>
-              <Rect x={t.x} y={t.y} width={t.width} height={t.height} stroke={selectedText === i ? '#ff9900' : 'blue'} strokeWidth={1} fill="transparent" onPress={() => { setSelectedText(i); setText(t.text); setTextRect(t); setMode('text'); }} />
-              <SvgText x={t.x + 4} y={t.y + t.height - 4} fill="blue" fontSize="16">{t.text}</SvgText>
+              <Rect
+                x={t.x}
+                y={t.y}
+                width={t.width}
+                height={t.height}
+                stroke={selectedText === i ? '#ff9900' : t.color}
+                strokeWidth={1}
+                fill="transparent"
+                onPress={() => {
+                  setSelectedText(i);
+                  setText(t.text);
+                  setTextRect(t);
+                  setMode('text');
+                }}
+              />
+              <SvgText x={t.x + 4} y={t.y + t.height - 4} fill={t.color} fontSize="16">
+                {t.text}
+              </SvgText>
             </React.Fragment>
           ))}
           {drawingRect && (
@@ -189,4 +325,16 @@ const styles = StyleSheet.create({
   textInputContainer: { position: 'absolute', bottom: 40, left: 20, right: 20, flexDirection: 'row', backgroundColor: 'white', padding: 10, borderRadius: 8, elevation: 2 },
   input: { flex: 1, borderWidth: 1, borderColor: '#ccc', marginRight: 10, padding: 8, borderRadius: 4 },
   addTextBtn: { justifyContent: 'center', paddingHorizontal: 10 },
+  pickerOverlay: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.3)',
+  },
+  colorPicker: {
+    width: 250,
+    height: 250,
+    backgroundColor: '#fff',
+    borderRadius: 12,
+  },
 });
