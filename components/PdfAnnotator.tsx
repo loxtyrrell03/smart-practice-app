@@ -1,31 +1,8 @@
-<<<<<<< HEAD
-=======
-import React, { useEffect, useRef, useState } from 'react';
-import {
-  GestureResponderEvent,
-  Modal,
-  PanResponder,
-  Platform,
-  StatusBar,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
-} from 'react-native';
-import Svg, { Path, Text as SvgText, Rect } from 'react-native-svg';
->>>>>>> b8a0d4dabd2cfde62a5b9e6a8613cfdd3b0801ff
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import React, { useRef, useState } from 'react';
 import { GestureResponderEvent, PanResponder, Platform, StatusBar, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import Pdf from 'react-native-pdf';
-<<<<<<< HEAD
 import Svg, { Path, Rect, Text as SvgText } from 'react-native-svg';
-=======
-import { ColorPicker as RNColorPicker } from 'react-native-color-picker';
-const ColorPickerComponent: any = RNColorPicker;
-import * as FileSystem from 'expo-file-system';
->>>>>>> b8a0d4dabd2cfde62a5b9e6a8613cfdd3b0801ff
 
 // Helper function to check if a touch point is within the bounding box of a path.
 function pathContainsPoint(d: string, x: number, y: number, threshold = 15) {
@@ -89,47 +66,12 @@ export default function PdfAnnotator({ uri, pdfId, onClose }: Props) {
   const [textInput, setTextInput] = useState('');
   const [textRect, setTextRect] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
   const [drawingRect, setDrawingRect] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
-<<<<<<< HEAD
 
   const erasePath = (x: number, y: number) => {
     setPaths(prevPaths =>
       prevPaths.filter(p => !pathContainsPoint(p.d, x, y))
     );
   };
-=======
-  const [texts, setTexts] = useState<TextNote[]>([]);
-  const [selectedText, setSelectedText] = useState<number | null>(null);
-  const [pickerVisible, setPickerVisible] = useState(false);
-
-  const annotationPath = `${FileSystem.documentDirectory}annotations/${encodeURIComponent(pdfId)}.json`;
-
-  useEffect(() => {
-    (async () => {
-      try {
-        await FileSystem.makeDirectoryAsync(`${FileSystem.documentDirectory}annotations`, { intermediates: true });
-        const data = await FileSystem.readAsStringAsync(annotationPath);
-        const parsed = JSON.parse(data);
-        setPaths(parsed.paths || []);
-        setTexts(parsed.texts || []);
-      } catch (e) {
-        // no saved annotations yet
-      }
-    })();
-  }, [annotationPath]);
-
-  useEffect(() => {
-    (async () => {
-      const data = JSON.stringify({ paths, texts });
-      try {
-        await FileSystem.writeAsStringAsync(annotationPath, data, {
-          encoding: FileSystem.EncodingType.UTF8,
-        });
-      } catch (e) {
-        // ignore write errors
-      }
-    })();
-  }, [paths, texts, annotationPath]);
->>>>>>> b8a0d4dabd2cfde62a5b9e6a8613cfdd3b0801ff
 
   const panResponder = useRef(
     PanResponder.create({
@@ -147,28 +89,7 @@ export default function PdfAnnotator({ uri, pdfId, onClose }: Props) {
         } else if (mode === 'text') {
           setDrawingRect({ x: locationX, y: locationY, width: 0, height: 0 });
         } else if (mode === 'erase') {
-<<<<<<< HEAD
           erasePath(locationX, locationY);
-=======
-          setPaths((ps: DrawPath[]) => {
-            const idx = ps.findIndex(p => pathContainsPoint(p.d, locationX, locationY));
-            if (idx !== -1) {
-              const copy = [...ps];
-              copy.splice(idx, 1);
-              return copy;
-            }
-            return ps;
-          });
-          setTexts((ts: TextNote[]) => {
-            const idx = ts.findIndex(t => rectContainsPoint(t, locationX, locationY));
-            if (idx !== -1) {
-              const copy = [...ts];
-              copy.splice(idx, 1);
-              return copy;
-            }
-            return ts;
-          });
->>>>>>> b8a0d4dabd2cfde62a5b9e6a8613cfdd3b0801ff
         }
       },
       onPanResponderMove: (e: GestureResponderEvent) => {
@@ -182,28 +103,7 @@ export default function PdfAnnotator({ uri, pdfId, onClose }: Props) {
             height: locationY - drawingRect.y,
           });
         } else if (mode === 'erase') {
-<<<<<<< HEAD
           erasePath(locationX, locationY);
-=======
-          setPaths((ps: DrawPath[]) => {
-            const idx = ps.findIndex(p => pathContainsPoint(p.d, locationX, locationY));
-            if (idx !== -1) {
-              const copy = [...ps];
-              copy.splice(idx, 1);
-              return copy;
-            }
-            return ps;
-          });
-          setTexts((ts: TextNote[]) => {
-            const idx = ts.findIndex(t => rectContainsPoint(t, locationX, locationY));
-            if (idx !== -1) {
-              const copy = [...ts];
-              copy.splice(idx, 1);
-              return copy;
-            }
-            return ts;
-          });
->>>>>>> b8a0d4dabd2cfde62a5b9e6a8613cfdd3b0801ff
         }
       },
       onPanResponderRelease: () => {
@@ -227,7 +127,6 @@ export default function PdfAnnotator({ uri, pdfId, onClose }: Props) {
     })
   ).current;
 
-<<<<<<< HEAD
   const handleConfirmText = () => {
     if (textRect && textInput.trim()) {
       const newText: TextNote = { 
@@ -242,41 +141,6 @@ export default function PdfAnnotator({ uri, pdfId, onClose }: Props) {
       } else {
         setTexts(prevTexts => [...prevTexts, newText]);
       }
-=======
-  const undoLast = () => {
-    if (paths.length > 0) {
-      setPaths(p => p.slice(0, -1));
-      return;
-    }
-    if (texts.length > 0) {
-      setTexts(t => t.slice(0, -1));
-    }
-  };
-
-
-  const confirmText = () => {
-    if (textRect && text.trim()) {
-      const w = Math.abs(textRect.width) || 50;
-      const h = Math.abs(textRect.height) || 20;
-      setTexts((ts: TextNote[]) => {
-        if (selectedText !== null) {
-          const copy = [...ts];
-          copy[selectedText] = {
-            ...copy[selectedText],
-            text,
-            x: textRect.x,
-            y: textRect.y,
-            width: w,
-            height: h,
-          };
-          return copy;
-        }
-        return [
-          ...ts,
-          { text, x: textRect.x, y: textRect.y, width: w, height: h, color: drawColor },
-        ];
-      });
->>>>>>> b8a0d4dabd2cfde62a5b9e6a8613cfdd3b0801ff
     }
     setTextInput('');
     setTextRect(null);
@@ -307,7 +171,6 @@ export default function PdfAnnotator({ uri, pdfId, onClose }: Props) {
         <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
           <Text style={styles.btnText}>Close</Text>
         </TouchableOpacity>
-<<<<<<< HEAD
         <View style={styles.toolSet}>
             <TouchableOpacity onPress={() => setMode('draw')} style={styles.headerBtn}>
                 <Ionicons name="pencil" size={24} color={mode === 'draw' ? '#007AFF' : '#444'} />
@@ -319,39 +182,6 @@ export default function PdfAnnotator({ uri, pdfId, onClose }: Props) {
                 <MaterialCommunityIcons name="eraser" size={24} color={mode === 'erase' ? '#007AFF' : '#444'} />
             </TouchableOpacity>
         </View>
-=======
-        <TouchableOpacity onPress={() => setMode('draw')} style={styles.headerBtn}>
-          <Ionicons name="pencil" size={20} color={mode === 'draw' ? '#007AFF' : '#444'} />
-        </TouchableOpacity>
-        <TouchableOpacity onPress={() => setMode('text')} style={styles.headerBtn}>
-          <Ionicons name="text" size={20} color={mode === 'text' ? '#007AFF' : '#444'} />
-        </TouchableOpacity>
-        <TouchableOpacity onPress={undoLast} style={styles.headerBtn}>
-          <MaterialCommunityIcons name="undo" size={20} color="#444" />
-        </TouchableOpacity>
-        <TouchableOpacity onPress={() => setMode(mode === 'erase' ? 'draw' : 'erase')} style={styles.headerBtn}>
-          <MaterialCommunityIcons name="eraser" size={20} color={mode === 'erase' ? '#007AFF' : '#444'} />
-        </TouchableOpacity>
-      </View>
-      <Modal visible={pickerVisible} transparent animationType="fade" onRequestClose={() => setPickerVisible(false)}>
-        <View style={styles.pickerOverlay}>
-          <ColorPickerComponent
-            onColorSelected={(c: string) => {
-              setPickerVisible(false);
-              setDrawColor(c);
-            }}
-            style={styles.colorPicker}
-          />
-        </View>
-      </Modal>
-      <View style={styles.colorRow}>
-        {['#ff0000', '#00aa00', '#0000ff'].map((c) => (
-          <TouchableOpacity key={c} onPress={() => setDrawColor(c)} style={[styles.colorSwatch, { backgroundColor: c, borderColor: drawColor === c ? '#000' : '#fff' }]} />
-        ))}
-        <TouchableOpacity onPress={() => setPickerVisible(true)} style={styles.headerBtn}>
-          <MaterialCommunityIcons name="palette" size={20} color="#444" />
-        </TouchableOpacity>
->>>>>>> b8a0d4dabd2cfde62a5b9e6a8613cfdd3b0801ff
       </View>
 
       {mode === 'draw' && (
@@ -364,7 +194,6 @@ export default function PdfAnnotator({ uri, pdfId, onClose }: Props) {
 
       <View style={styles.viewer}>
         <Pdf source={{ uri }} style={styles.pdf} />
-<<<<<<< HEAD
         <Svg style={StyleSheet.absoluteFill} {...panResponder.panHandlers}>
           {paths.map((p, i) => <Path key={`path-${i}`} d={p.d} stroke={p.color} strokeWidth={3} fill="none" />)}
           
@@ -379,31 +208,6 @@ export default function PdfAnnotator({ uri, pdfId, onClose }: Props) {
                 onPress={() => handleSelectText(t, i)} 
               />
               <SvgText x={t.x + 5} y={t.y + 16} fill="blue" fontSize={16} fontWeight="bold">{t.text}</SvgText>
-=======
-        <Svg style={StyleSheet.absoluteFill}>
-          {paths.map((p: DrawPath, i: number) => <Path key={i} d={p.d} stroke={p.color} strokeWidth={2} fill="none" />)}
-          {currentPath ? <Path d={currentPath} stroke={activeColor.current} strokeWidth={2} fill="none" /> : null}
-          {texts.map((t: TextNote, i: number) => (
-            <React.Fragment key={i}>
-              <Rect
-                x={t.x}
-                y={t.y}
-                width={t.width}
-                height={t.height}
-                stroke={selectedText === i ? '#ff9900' : t.color}
-                strokeWidth={1}
-                fill="transparent"
-                onPress={() => {
-                  setSelectedText(i);
-                  setText(t.text);
-                  setTextRect(t);
-                  setMode('text');
-                }}
-              />
-              <SvgText x={t.x + 4} y={t.y + t.height - 4} fill={t.color} fontSize="16">
-                {t.text}
-              </SvgText>
->>>>>>> b8a0d4dabd2cfde62a5b9e6a8613cfdd3b0801ff
             </React.Fragment>
           ))}
           
