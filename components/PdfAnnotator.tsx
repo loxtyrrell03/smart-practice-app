@@ -129,11 +129,12 @@ export default function PdfAnnotator({ uri, pdfId, onClose }: Props) {
 
   const handleConfirmText = () => {
     if (textRect && textInput.trim()) {
-      const newText: TextNote = { 
-        text: textInput, 
+      const newText: TextNote = {
+        text: textInput,
         ...textRect,
-        width: Math.max(textRect.width, 50), 
-        height: Math.max(textRect.height, 20) 
+        color: drawColor,
+        width: Math.max(textRect.width, 50),
+        height: Math.max(textRect.height, 20)
       };
 
       if (selectedTextIndex !== null) {
@@ -207,7 +208,7 @@ export default function PdfAnnotator({ uri, pdfId, onClose }: Props) {
                 strokeWidth={2} fill="transparent" 
                 onPress={() => handleSelectText(t, i)} 
               />
-              <SvgText x={t.x + 5} y={t.y + 16} fill="blue" fontSize={16} fontWeight="bold">{t.text}</SvgText>
+              <SvgText x={t.x + 5} y={t.y + 16} fill={t.color} fontSize={16} fontWeight="bold">{t.text}</SvgText>
             </React.Fragment>
           ))}
           
