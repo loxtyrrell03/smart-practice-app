@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { PanResponder, StyleSheet, Text, TextInput, TouchableOpacity, View, Platform, StatusBar } from 'react-native';
+import { PanResponder, StyleSheet, Text, TextInput, TouchableOpacity, View, Platform, StatusBar, GestureResponderEvent } from 'react-native';
 import Svg, { Path, Text as SvgText, Rect } from 'react-native-svg';
 import { Ionicons } from '@expo/vector-icons';
 import Pdf from 'react-native-pdf';
@@ -27,20 +27,20 @@ export default function PdfAnnotator({ uri, onClose }: Props) {
   const panResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
-      onPanResponderGrant: (e) => {
+      onPanResponderGrant: (e: GestureResponderEvent) => {
         const { locationX, locationY } = e.nativeEvent;
         if (mode === 'draw') {
           setCurrentPath(`M${locationX},${locationY}`);
         } else if (mode === 'text') {
           setDrawingRect({ x: locationX, y: locationY, width: 0, height: 0 });
         } else if (mode === 'erase') {
-          setPaths((ps) => ps.slice(0, -1));
+          setPaths((ps: DrawPath[]) => ps.slice(0, -1));
         }
       },
-      onPanResponderMove: (e) => {
+      onPanResponderMove: (e: GestureResponderEvent) => {
         const { locationX, locationY } = e.nativeEvent;
         if (mode === 'draw') {
-          setCurrentPath((p) => `${p} L${locationX},${locationY}`);
+          setCurrentPath((p: string) => `${p} L${locationX},${locationY}`);
         } else if (mode === 'text' && drawingRect) {
           setDrawingRect({
             ...drawingRect,
@@ -52,7 +52,7 @@ export default function PdfAnnotator({ uri, onClose }: Props) {
       onPanResponderRelease: () => {
         if (mode === 'draw') {
           if (currentPath) {
-            setPaths((ps) => [...ps, { d: currentPath, color: drawColor }]);
+            setPaths((ps: DrawPath[]) => [...ps, { d: currentPath, color: drawColor }]);
             setCurrentPath('');
           }
         } else if (mode === 'text' && drawingRect) {
@@ -68,7 +68,7 @@ export default function PdfAnnotator({ uri, onClose }: Props) {
     if (textRect && text.trim()) {
       const w = Math.abs(textRect.width) || 50;
       const h = Math.abs(textRect.height) || 20;
-      setTexts((ts) => {
+      setTexts((ts: TextNote[]) => {
         if (selectedText !== null) {
           const copy = [...ts];
           copy[selectedText] = { text, x: textRect.x, y: textRect.y, width: w, height: h };
@@ -108,9 +108,9 @@ export default function PdfAnnotator({ uri, onClose }: Props) {
       <View style={styles.viewer} {...panResponder.panHandlers}>
         <Pdf source={{ uri }} style={styles.pdf} />
         <Svg style={StyleSheet.absoluteFill}>
-          {paths.map((p, i) => <Path key={i} d={p.d} stroke={p.color} strokeWidth={2} fill="none" />)}
+          {paths.map((p: DrawPath, i: number) => <Path key={i} d={p.d} stroke={p.color} strokeWidth={2} fill="none" />)}
           {currentPath ? <Path d={currentPath} stroke={drawColor} strokeWidth={2} fill="none" /> : null}
-          {texts.map((t, i) => (
+          {texts.map((t: TextNote, i: number) => (
             <React.Fragment key={i}>
               <Rect x={t.x} y={t.y} width={t.width} height={t.height} stroke={selectedText === i ? '#ff9900' : 'blue'} strokeWidth={1} fill="transparent" onPress={() => { setSelectedText(i); setText(t.text); setTextRect(t); setMode('text'); }} />
               <SvgText x={t.x + 4} y={t.y + t.height - 4} fill="blue" fontSize="16">{t.text}</SvgText>
@@ -128,7 +128,7 @@ export default function PdfAnnotator({ uri, onClose }: Props) {
             <Text style={styles.btnText}>Done</Text>
           </TouchableOpacity>
           {selectedText !== null && (
-            <TouchableOpacity onPress={() => { setTexts(ts => ts.filter((_, idx) => idx !== selectedText)); setSelectedText(null); setMode('draw'); }} style={styles.addTextBtn}>
+            <TouchableOpacity onPress={() => { setTexts((ts: TextNote[]) => ts.filter((_, idx) => idx !== selectedText)); setSelectedText(null); setMode('draw'); }} style={styles.addTextBtn}>
               <Text style={[styles.btnText, {color: '#D11A2A'}]}>Delete</Text>
             </TouchableOpacity>
           )}
