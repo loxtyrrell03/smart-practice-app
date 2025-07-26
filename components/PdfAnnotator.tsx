@@ -1,8 +1,10 @@
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import Slider from '@react-native-community/slider';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Dimensions,
+  InteractionManager,
   Modal,
   Platform,
   StatusBar,
@@ -20,6 +22,7 @@ import {
 } from 'react-native-gesture-handler';
 import Pdf from 'react-native-pdf';
 import Animated, {
+  runOnJS,
   useAnimatedStyle,
   useSharedValue,
   withSpring,
@@ -33,7 +36,7 @@ interface Props {
   onClose: () => void;
 }
 
-type DrawPath = { id: string; d: string; color: string };
+type DrawPath = { id: string; d: string; color: string; page: number };
 type TextNote = {
   id: string;
   text: string;
@@ -42,6 +45,7 @@ type TextNote = {
   width: number;
   height: number;
   color: string;
+  page: number;
 };
 type HistoryItem = { type: 'path' | 'text'; id: string };
 type RectType = { x: number; y: number; width: number; height: number };
@@ -94,6 +98,11 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
   const historyRef = useRef<HistoryItem[]>([]);
   const STORAGE_KEY = `annotations-${pdfId}`;
 
+  // --- Page Navigation State ---
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [totalPages, setTotalPages] = useState<number>(0);
+  const [pageInput, setPageInput] = useState<string>('1');
+
   // --- Sidebar State & Animation ---
   const [sidebarVisible, setSidebarVisible] = useState(false);
   const [sidebarOrientation, setSidebarOrientation] = useState<'vertical' | 'horizontal'>('vertical');
@@ -103,20 +112,22 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
 
   // Load and Save Annotations
   useEffect(() => {
-    (async () => {
-      try {
-        const stored = await AsyncStorage.getItem(STORAGE_KEY);
-        if (stored) {
-          const { paths: storedPaths, texts: storedTexts, history: storedHistory } = JSON.parse(stored);
-          setPaths(storedPaths || []);
-          setTexts(storedTexts || []);
-          historyRef.current = storedHistory || [];
+    setPageInput(currentPage.toString());
+    const task = InteractionManager.runAfterInteractions(async () => {
+        try {
+            const stored = await AsyncStorage.getItem(STORAGE_KEY);
+            if (stored) {
+            const { paths: storedPaths, texts: storedTexts, history: storedHistory } = JSON.parse(stored);
+            setPaths(storedPaths || []);
+            setTexts(storedTexts || []);
+            historyRef.current = storedHistory || [];
+            }
+        } catch (e) {
+            console.warn('Failed to load annotations', e);
         }
-      } catch (e) {
-        console.warn('Failed to load annotations', e);
-      }
-    })();
-  }, [STORAGE_KEY]);
+    });
+    return () => task.cancel();
+  }, [STORAGE_KEY, currentPage]);
 
   useEffect(() => {
     const dataToSave = JSON.stringify({ paths, texts, history: historyRef.current });
@@ -136,49 +147,67 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
   };
 
   const eraseAtPoint = (x: number, y: number) => {
-    setPaths(prev => prev.filter(p => !pathContainsPoint(p.d, x, y)));
-    setTexts(prev => prev.filter(t => t && !rectContainsPoint(t, x, y)));
+    setPaths(prev => prev.filter(p => !pathContainsPoint(p.d, x, y) || p.page !== currentPage));
+    setTexts(prev => prev.filter(t => (t && !rectContainsPoint(t, x, y)) || t.page !== currentPage));
   };
+  
+  // --- Gesture Handler Worklets ---
+  const startDrawing = runOnJS(setCurrentPath);
+  const updateDrawing = runOnJS(setCurrentPath);
+  const finishDrawing = runOnJS((path: string) => {
+    if (!path) return;
+    const id = Date.now().toString();
+    setPaths(prev => [...prev, { id, d: path, color: activeColor.current, page: currentPage }]);
+    historyRef.current.push({ type: 'path', id });
+    setCurrentPath(null);
+  });
+  
+  const startTextRect = runOnJS(setDrawingRect);
+  const updateTextRect = runOnJS(setDrawingRect);
+  const finishTextRect = runOnJS((rect: RectType) => {
+    if (rect) {
+      const finalRect = {
+        x: rect.width < 0 ? rect.x + rect.width : rect.x,
+        y: rect.height < 0 ? rect.y + rect.height : rect.y,
+        width: Math.abs(rect.width),
+        height: Math.abs(rect.height),
+      };
+      if (finalRect.width > 5 && finalRect.height > 5) {
+        setTextRect(finalRect);
+      }
+    }
+    setDrawingRect(null);
+  });
+  
+  const eraseAtPointJS = runOnJS(eraseAtPoint);
 
   // --- Gestures ---
   const pdfDrawGesture = Gesture.Pan()
     .onBegin(e => {
       if (mode === 'draw') {
         activeColor.current = drawColor;
-        setCurrentPath(`M${e.x},${e.y}`);
+        startDrawing(`M${e.x},${e.y}`);
       } else if (mode === 'text') {
-        setDrawingRect({ x: e.x, y: e.y, width: 0, height: 0 });
+        startTextRect({ x: e.x, y: e.y, width: 0, height: 0 });
       } else if (mode === 'erase') {
-        eraseAtPoint(e.x, e.y);
+        eraseAtPointJS(e.x, e.y);
       }
     })
     .onUpdate(e => {
       if (mode === 'draw' && currentPath) {
-        setCurrentPath(prev => `${prev} L${e.x},${e.y}`);
+        updateDrawing(prev => `${prev} L${e.x},${e.y}`);
       } else if (mode === 'text' && drawingRect) {
-        setDrawingRect({ ...drawingRect, width: e.x - drawingRect.x, height: e.y - drawingRect.y });
+        updateTextRect({ ...drawingRect, width: e.x - drawingRect.x, height: e.y - drawingRect.y });
       } else if (mode === 'erase') {
-        eraseAtPoint(e.x, e.y);
+        eraseAtPointJS(e.x, e.y);
       }
     })
     .onEnd(() => {
-      if (mode === 'draw' && currentPath) {
-        const id = Date.now().toString();
-        setPaths(prev => [...prev, { id, d: currentPath, color: activeColor.current }]);
-        historyRef.current.push({ type: 'path', id });
-        setCurrentPath(null);
-      } else if (mode === 'text' && drawingRect) {
-        const finalRect = {
-          x: drawingRect.width < 0 ? drawingRect.x + drawingRect.width : drawingRect.x,
-          y: drawingRect.height < 0 ? drawingRect.y + drawingRect.height : drawingRect.y,
-          width: Math.abs(drawingRect.width),
-          height: Math.abs(drawingRect.height),
-        };
-        if (finalRect.width > 5 && finalRect.height > 5) {
-          setTextRect(finalRect);
+        if (mode === 'draw' && currentPath) {
+            finishDrawing(currentPath);
+        } else if (mode === 'text' && drawingRect) {
+            finishTextRect(drawingRect);
         }
-        setDrawingRect(null);
-      }
     })
     .minDistance(1);
     
@@ -194,7 +223,6 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
         const endX = sidebarX.value;
         const endY = sidebarY.value;
         const verticalThreshold = 60;
-        const horizontalThreshold = 60;
 
         if (endX < verticalThreshold || endX > screenWidth - verticalThreshold - (sidebarVisible ? 70 : 60)) {
             // Snap to sides (vertical)
@@ -233,7 +261,7 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
       const id = Date.now().toString();
       const newText: TextNote = {
         id, text: textInput, ...textRect, color: '#000000',
-        width: Math.max(textRect.width, 50), height: Math.max(textRect.height, 20),
+        width: Math.max(textRect.width, 50), height: Math.max(textRect.height, 20), page: currentPage
       };
       setTexts(prev => [...prev, newText]);
       historyRef.current.push({ type: 'text', id });
@@ -259,22 +287,39 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
     }
   };
 
+  const handlePageInputChange = (text: string) => {
+    const num = parseInt(text, 10);
+    if (!isNaN(num) && num > 0 && num <= totalPages) {
+      setCurrentPage(num);
+    }
+    setPageInput(text);
+  };
+
   const isHorizontal = sidebarOrientation === 'horizontal';
 
   // --- Component Render ---
   return (
     <GestureHandlerRootView style={styles.container}>
       <View style={styles.viewer}>
-        <Pdf source={{ uri }} style={styles.pdf} singlePage={true}/>
+        <Pdf 
+            source={{ uri }} 
+            style={styles.pdf} 
+            page={currentPage}
+            onLoadComplete={(numberOfPages) => setTotalPages(numberOfPages)}
+            onPageChanged={(page) => {
+                setCurrentPage(page);
+                setPageInput(page.toString());
+            }}
+        />
         <GestureDetector gesture={pdfDrawGesture}>
           <Svg style={StyleSheet.absoluteFill} pointerEvents="box-none">
-            {paths.map(p => (
+            {paths.filter(p => p.page === currentPage).map(p => (
               <Path key={p.id} d={p.d} stroke={p.color} strokeWidth={3} fill="none" />
             ))}
             {currentPath && (
               <Path d={currentPath} stroke={activeColor.current} strokeWidth={3} fill="none" />
             )}
-            {texts.map((t, i) => (
+            {texts.filter(t => t.page === currentPage).map((t, i) => (
               <React.Fragment key={t.id}>
                 <Rect
                   x={t.x} y={t.y} width={t.width} height={t.height}
@@ -310,6 +355,38 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
           )}
         </View>
       )}
+
+      {/* --- Page Navigation Bar --- */}
+      { totalPages > 1 && (
+        <View style={styles.navBar}>
+            <TouchableOpacity onPress={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1}>
+                <Ionicons name="chevron-back" size={32} color={currentPage === 1 ? '#999' : '#000'} />
+            </TouchableOpacity>
+            <View style={styles.navCenter}>
+                <TextInput 
+                    style={styles.pageInput}
+                    value={pageInput}
+                    onChangeText={setPageInput}
+                    onSubmitEditing={() => handlePageInputChange(pageInput)}
+                    keyboardType="number-pad"
+                    returnKeyType="done"
+                />
+                <Text style={styles.pageText}>/ {totalPages}</Text>
+            </View>
+            <Slider 
+                style={styles.slider}
+                minimumValue={1}
+                maximumValue={totalPages}
+                step={1}
+                value={currentPage}
+                onSlidingComplete={(value: number) => setCurrentPage(value)}
+            />
+             <TouchableOpacity onPress={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages}>
+                <Ionicons name="chevron-forward" size={32} color={currentPage === totalPages ? '#999' : '#000'} />
+            </TouchableOpacity>
+        </View>
+      )}
+
 
       {/* --- Draggable Sidebar --- */}
       <GestureDetector gesture={sidebarDragGesture}>
@@ -460,7 +537,8 @@ const styles = StyleSheet.create({
     // -- Text Input Styles --
     textInputContainer: {
         position: 'absolute',
-        bottom: 40, left: 20, right: 20,
+        bottom: 100, // Adjusted to be above the new nav bar
+        left: 20, right: 20,
         flexDirection: 'row',
         backgroundColor: 'white',
         padding: 10, borderRadius: 8,
@@ -486,5 +564,46 @@ const styles = StyleSheet.create({
         backgroundColor: '#fff',
         borderRadius: 20,
         padding: 20,
+    },
+
+    // --- Page Navigation Styles ---
+    navBar: {
+        position: 'absolute',
+        bottom: 0,
+        left: 0,
+        right: 0,
+        height: 80,
+        backgroundColor: 'rgba(245, 245, 245, 0.95)',
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        paddingHorizontal: 20,
+        paddingBottom: 20, // Safe area for home indicator
+        borderTopWidth: 1,
+        borderTopColor: '#ddd'
+    },
+    navCenter: {
+        flexDirection: 'row',
+        alignItems: 'center',
+    },
+    pageInput: {
+        borderWidth: 1,
+        borderColor: '#ccc',
+        borderRadius: 8,
+        paddingHorizontal: 10,
+        paddingVertical: 5,
+        width: 50,
+        textAlign: 'center',
+        fontSize: 16,
+        marginRight: 5,
+    },
+    pageText: {
+        fontSize: 16,
+        color: '#333'
+    },
+    slider: {
+        flex: 1,
+        height: 40,
+        marginHorizontal: 10,
     },
 });
