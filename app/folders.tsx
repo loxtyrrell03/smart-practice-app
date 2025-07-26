@@ -23,8 +23,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import PdfAnnotator from '../components/PdfAnnotator';
-
+import { PdfAnnotator } from '../components/PdfAnnotator';
 import {
   Folder,
   Item,
