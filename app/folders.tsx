@@ -1,5 +1,5 @@
 /* ------------------------------------------------------------------
-   Folder & PDF grid (safe picker) • app/folders.tsx
+    Folder & PDF grid (safe picker) • app/folders.tsx
 ------------------------------------------------------------------- */
 
 import { Ionicons, MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
