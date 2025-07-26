@@ -67,7 +67,11 @@ export default function FolderScreen({ parentFolder }: { parentFolder: Folder | 
   // Refresh list whenever the screen gains focus to reflect any moves
   useFocusEffect(
     useCallback(() => {
-      setRefreshKey(k => k + 1);
+      const task = InteractionManager.runAfterInteractions(() => {
+        setRefreshKey(k => k + 1);
+      });
+
+      return () => task.cancel();
     }, [])
   );
 

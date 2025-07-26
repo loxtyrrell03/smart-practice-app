@@ -96,7 +96,8 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
 
   // --- Sidebar State & Animation ---
   const [sidebarVisible, setSidebarVisible] = useState(false);
-  const sidebarX = useSharedValue(screenWidth - 80);
+  const [sidebarOrientation, setSidebarOrientation] = useState<'vertical' | 'horizontal'>('vertical');
+  const sidebarX = useSharedValue(screenWidth - 70);
   const sidebarY = useSharedValue(100);
   const dragContext = useSharedValue({ x: 0, y: 0 });
 
@@ -190,13 +191,22 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
         sidebarY.value = dragContext.value.y + event.translationY;
     })
     .onEnd(() => {
-        if (sidebarX.value > screenWidth / 2) {
-            sidebarX.value = withSpring(screenWidth - (sidebarVisible ? 200 : 80));
+        const endX = sidebarX.value;
+        const endY = sidebarY.value;
+        const verticalThreshold = 60;
+        const horizontalThreshold = 60;
+
+        if (endX < verticalThreshold || endX > screenWidth - verticalThreshold - (sidebarVisible ? 70 : 60)) {
+            // Snap to sides (vertical)
+            setSidebarOrientation('vertical');
+            sidebarX.value = withSpring(endX < screenWidth / 2 ? 10 : screenWidth - 70);
+            sidebarY.value = withSpring(Math.max(50, Math.min(screenHeight - 250, endY)));
         } else {
-            sidebarX.value = withSpring(20);
+            // Snap to top/bottom (horizontal)
+            setSidebarOrientation('horizontal');
+            sidebarY.value = withSpring(endY < screenHeight / 2 ? 50 : screenHeight - 120);
+            sidebarX.value = withSpring(Math.max(10, Math.min(screenWidth - 250, endX)));
         }
-        if (sidebarY.value < 50) sidebarY.value = withSpring(50);
-        if (sidebarY.value > screenHeight - 200) sidebarY.value = withSpring(screenHeight - 200);
     });
 
   const animatedSidebarStyle = useAnimatedStyle(() => {
@@ -248,6 +258,8 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
       setTextRect(null);
     }
   };
+
+  const isHorizontal = sidebarOrientation === 'horizontal';
 
   // --- Component Render ---
   return (
@@ -304,11 +316,11 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
           <Animated.View style={[styles.sidebarContainer, animatedSidebarStyle]}>
               { sidebarVisible ? (
                   // --- EXPANDED VIEW ---
-                  <View style={styles.sidebarExpanded}>
+                  <View style={[styles.sidebarExpanded, isHorizontal && styles.sidebarExpandedHorizontal]}>
                       <TouchableOpacity onPress={() => setSidebarVisible(false)} style={styles.sidebarHeader}>
-                          <Ionicons name="chevron-forward" size={24} color="#555" />
+                          <Ionicons name={isHorizontal ? "chevron-down" : "chevron-forward"} size={24} color="#555" />
                       </TouchableOpacity>
-                      <View style={styles.toolGrid}>
+                      <View style={[styles.toolGrid, isHorizontal && styles.toolGridHorizontal]}>
                           <TouchableOpacity onPress={() => setMode('draw')} style={styles.toolBtn}>
                               <Ionicons name="pencil" size={24} color={mode === 'draw' ? '#007AFF' : '#444'}/>
                           </TouchableOpacity>
@@ -323,7 +335,7 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
                            </TouchableOpacity>
                       </View>
                       {mode === 'draw' && (
-                           <View style={styles.colorRow}>
+                           <View style={[styles.colorRow, isHorizontal && styles.colorRowHorizontal]}>
                                 {['#ff0000', '#00aa00', '#0000ff', '#000000'].map(c => (
                                 <TouchableOpacity key={c} onPress={() => setDrawColor(c)} style={[ styles.colorSwatch, { backgroundColor: c, borderColor: drawColor === c ? '#007AFF' : '#fff' }]} />
                                 ))}
@@ -385,47 +397,62 @@ const styles = StyleSheet.create({
         shadowRadius: 4,
     },
     sidebarExpanded: {
-        width: 180,
+        width: 60,
         backgroundColor: 'rgba(250, 250, 250, 0.92)',
-        borderRadius: 20,
-        padding: 10,
+        borderRadius: 30,
+        paddingVertical: 10,
+        alignItems: 'center',
         elevation: 8,
         shadowColor: '#000',
         shadowOffset: { width: 0, height: 4 },
         shadowOpacity: 0.3,
         shadowRadius: 4,
     },
+    sidebarExpandedHorizontal: {
+        width: 'auto',
+        height: 60,
+        flexDirection: 'row',
+        paddingHorizontal: 10,
+    },
     sidebarHeader: {
-        alignItems: 'flex-start',
-        borderBottomWidth: 1,
-        borderBottomColor: '#ddd',
         paddingBottom: 5,
-        marginBottom: 10,
+        marginBottom: 5,
     },
     toolGrid: {
+        flexDirection: 'column',
+        alignItems: 'center',
+    },
+    toolGridHorizontal: {
         flexDirection: 'row',
-        flexWrap: 'wrap',
-        justifyContent: 'space-around',
+        alignItems: 'center',
     },
     toolBtn: {
-        width: '45%',
-        alignItems: 'center',
-        paddingVertical: 15,
+        paddingVertical: 12,
+        paddingHorizontal: 15,
     },
     colorRow: {
-      flexDirection: 'row',
-      justifyContent: 'center',
+      flexDirection: 'column',
       alignItems: 'center',
       paddingVertical: 8,
       borderTopWidth: 1,
       borderTopColor: '#ddd',
       marginTop: 10,
     },
+    colorRowHorizontal: {
+        flexDirection: 'row',
+        borderTopWidth: 0,
+        borderLeftWidth: 1,
+        borderLeftColor: '#ddd',
+        marginTop: 0,
+        marginLeft: 10,
+        paddingLeft: 5,
+    },
     colorSwatch: {
       width: 28,
       height: 28,
       borderRadius: 14,
-      marginHorizontal: 5,
+      marginVertical: 5,
+      marginHorizontal: 10,
       borderWidth: 3,
     },
     centerContent: { justifyContent: 'center', alignItems: 'center' },
