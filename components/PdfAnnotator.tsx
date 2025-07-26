@@ -23,12 +23,13 @@ import {
 import Pdf from 'react-native-pdf';
 import Animated, {
   runOnJS,
+  useAnimatedProps,
   useAnimatedStyle,
   useSharedValue,
   withSpring,
   withTiming,
 } from 'react-native-reanimated';
-import Svg, { Path, Rect, Text as SvgText } from 'react-native-svg';
+import Svg, { Path, PathProps, Rect, Text as SvgText } from 'react-native-svg';
 
 // --- Type Definitions ---
 interface Props {
@@ -81,12 +82,14 @@ function rectContainsPoint(
   return x >= left && x <= right && y >= top && y <= bottom;
 }
 
+const AnimatedPath = Animated.createAnimatedComponent(Path);
+
 export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
   const { height: screenHeight, width: screenWidth } = Dimensions.get('window');
 
   // --- State ---
   const [paths, setPaths] = useState<DrawPath[]>([]);
-  const [currentPath, setCurrentPath] = useState<string | null>(null);
+  const currentPath = useSharedValue<string | null>(null);
   const [mode, setMode] = useState<'draw' | 'text' | 'erase'>('draw');
   const [drawColor, setDrawColor] = useState<string>('#CD5C5C');
   const activeColor = useRef<string>(drawColor);
@@ -103,7 +106,7 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [totalPages, setTotalPages] = useState<number>(0);
   const [pageInput, setPageInput] = useState<string>('1');
-  const [isNavVisible, setIsNavVisible] = useState(false);
+  const [isNavVisible, setIsNavVisible] = useState(true);
   const navBarY = useSharedValue(100);
 
   // --- Sidebar State & Animation ---
@@ -115,32 +118,38 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
 
   // Load and Save Annotations
   useEffect(() => {
-    setPageInput(currentPage.toString());
-    const task = InteractionManager.runAfterInteractions(async () => {
-        try {
-            const stored = await AsyncStorage.getItem(STORAGE_KEY);
-            if (stored) {
-            const { paths: storedPaths, texts: storedTexts, history: storedHistory } = JSON.parse(stored);
-            setPaths(storedPaths || []);
-            setTexts(storedTexts || []);
-            historyRef.current = storedHistory || [];
-            }
-        } catch (e) {
-            console.warn('Failed to load annotations', e);
+    const loadAnnotations = async () => {
+      try {
+        const stored = await AsyncStorage.getItem(STORAGE_KEY);
+        if (stored) {
+          const { paths: storedPaths, texts: storedTexts, history: storedHistory } = JSON.parse(stored);
+          setPaths(storedPaths || []);
+          setTexts(storedTexts || []);
+          historyRef.current = storedHistory || [];
         }
+      } catch (e) {
+        console.warn('Failed to load annotations', e);
+      }
+    };
+
+    const task = InteractionManager.runAfterInteractions(() => {
+      loadAnnotations();
     });
+
     return () => task.cancel();
-  }, [STORAGE_KEY, currentPage]);
+  }, [STORAGE_KEY]);
 
   useEffect(() => {
     const dataToSave = JSON.stringify({ paths, texts, history: historyRef.current });
     AsyncStorage.setItem(STORAGE_KEY, dataToSave).catch(e => console.warn('Save error', e));
   }, [paths, texts, STORAGE_KEY]);
-  
+
   // Animate Nav Bar
   useEffect(() => {
-    navBarY.value = withTiming(isNavVisible ? 0 : 100, { duration: 250 });
-  }, [isNavVisible]);
+    if (totalPages > 1) {
+        navBarY.value = withTiming(isNavVisible ? 0 : 100, { duration: 250 });
+    }
+  }, [isNavVisible, totalPages]);
 
 
   const undoLast = () => {
@@ -160,18 +169,15 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
   };
   
   // --- Gesture Handler Worklets ---
-  const startDrawing = runOnJS(setCurrentPath);
-  const updateDrawing = runOnJS(setCurrentPath);
-  const finishDrawing = runOnJS((path: string) => {
+  const finishDrawing = (path: string) => {
     if (!path) return;
     const id = Date.now().toString();
     setPaths(prev => [...prev, { id, d: path, color: activeColor.current, page: currentPage }]);
     historyRef.current.push({ type: 'path', id });
-    setCurrentPath(null);
-  });
+    currentPath.value = null;
+  };
   
   const startTextRect = runOnJS(setDrawingRect);
-  const updateTextRect = runOnJS(setDrawingRect);
   const finishTextRect = runOnJS((rect: RectType | null) => {
     if (rect) {
       const finalRect = {
@@ -194,7 +200,7 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
     .onBegin(e => {
       if (mode === 'draw') {
         activeColor.current = drawColor;
-        startDrawing(`M${e.x},${e.y}`);
+        currentPath.value = `M${e.x},${e.y}`;
       } else if (mode === 'text') {
         startTextRect({ x: e.x, y: e.y, width: 0, height: 0 });
       } else if (mode === 'erase') {
@@ -202,20 +208,18 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
       }
     })
     .onUpdate(e => {
-      if (mode === 'draw') {
-        // This direct state update is fine because it doesn't cause re-renders in other components
-        setCurrentPath(prev => `${prev} L${e.x},${e.y}`);
+      if (mode === 'draw' && currentPath.value) {
+        currentPath.value = `${currentPath.value} L${e.x},${e.y}`;
       } else if (mode === 'text') {
-        // This one also only affects the SVG overlay
-        setDrawingRect(prev => prev ? { ...prev, width: e.x - prev.x, height: e.y - prev.y } : null);
+        runOnJS(setDrawingRect)(prev => prev ? { ...prev, width: e.x - prev.x, height: e.y - prev.y } : null);
       } else if (mode === 'erase') {
         eraseAtPointJS(e.x, e.y);
       }
     })
     .onEnd(() => {
         if (mode === 'draw') {
-            finishDrawing(currentPath!);
-        } else if (mode === 'text') {
+            runOnJS(finishDrawing)(currentPath.value!);
+        } else if (mode === 'text' && drawingRect) {
             finishTextRect(drawingRect);
         }
     })
@@ -259,6 +263,11 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
       }
   })
 
+  const animatedPathProps = useAnimatedProps<PathProps>(() => {
+    return {
+      d: currentPath.value || '',
+    };
+  });
 
   // --- Text Handling ---
   const handleConfirmText = () => {
@@ -332,9 +341,14 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
             {paths.filter(p => p.page === currentPage).map(p => (
               <Path key={p.id} d={p.d} stroke={p.color} strokeWidth={4} fill="none" strokeLinecap="round" strokeLinejoin="round"/>
             ))}
-            {currentPath && (
-              <Path d={currentPath} stroke={activeColor.current} strokeWidth={4} fill="none" strokeLinecap="round" strokeLinejoin="round"/>
-            )}
+            <AnimatedPath
+              animatedProps={animatedPathProps}
+              stroke={activeColor.current}
+              strokeWidth={4}
+              fill="none"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
             {texts.filter(t => t.page === currentPage).map((t, i) => (
               <React.Fragment key={t.id}>
                 <Rect
