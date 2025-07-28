@@ -48,6 +48,7 @@ type TextNote = {
   height: number;
   color: string;
   page: number;
+  fontSize: number;
 };
 type HistoryItem = { type: 'path' | 'text'; id: string };
 type RectType = { x: number; y: number; width: number; height: number };
@@ -56,17 +57,14 @@ type RectType = { x: number; y: number; width: number; height: number };
 function pathContainsPoint(d: string, x: number, y: number, threshold = 15): boolean {
   const coords = d.match(/[-\d.]+/g)?.map(Number);
   if (!coords) return false;
-  const xs: number[] = [];
-  const ys: number[] = [];
   for (let i = 0; i < coords.length; i += 2) {
-    xs.push(coords[i]);
-    ys.push(coords[i + 1]);
+    const px = coords[i];
+    const py = coords[i + 1];
+    if (Math.sqrt((px - x) ** 2 + (py - y) ** 2) < threshold) {
+      return true;
+    }
   }
-  const minX = Math.min(...xs) - threshold;
-  const maxX = Math.max(...xs) + threshold;
-  const minY = Math.min(...ys) - threshold;
-  const maxY = Math.max(...ys) + threshold;
-  return x >= minX && x <= maxX && y >= minY && y <= maxY;
+  return false;
 }
 
 function rectContainsPoint(
@@ -83,6 +81,9 @@ function rectContainsPoint(
 }
 
 const AnimatedPath = Animated.createAnimatedComponent(Path);
+const AnimatedRect = Animated.createAnimatedComponent(Rect);
+const DEFAULT_FONT_SIZE = 16;
+const FONT_SIZE_RATIO = 0.4;
 
 export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
   const { height: screenHeight, width: screenWidth } = Dimensions.get('window');
@@ -90,17 +91,21 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
   // --- State ---
   const [paths, setPaths] = useState<DrawPath[]>([]);
   const currentPath = useSharedValue<string | null>(null);
-  const [mode, setMode] = useState<'draw' | 'text' | 'erase'>('draw');
+  const [mode, setMode] = useState<'draw' | 'text' | 'erase' | 'cursor'>('draw');
   const [drawColor, setDrawColor] = useState<string>('#CD5C5C');
   const activeColor = useRef<string>(drawColor);
   const [texts, setTexts] = useState<TextNote[]>([]);
-  const [selectedTextIndex, setSelectedTextIndex] = useState<number | null>(null);
+  const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
   const [textInput, setTextInput] = useState<string>('');
   const [textRect, setTextRect] = useState<RectType | null>(null);
-  const [drawingRect, setDrawingRect] = useState<RectType | null>(null);
   const [pickerVisible, setPickerVisible] = useState<boolean>(false);
   const historyRef = useRef<HistoryItem[]>([]);
   const STORAGE_KEY = `annotations-${pdfId}`;
+
+  // --- Animated Shared Values for Gestures ---
+  const textGestureRect = useSharedValue<RectType | null>(null);
+  const eraseGesturePoints = useSharedValue<{ x: number; y: number }[]>([]);
+  const resizeDragContext = useSharedValue<{ x: number; y: number; width: number; height: number } | null>(null);
 
   // --- Page Navigation State ---
   const [currentPage, setCurrentPage] = useState<number>(1);
@@ -115,6 +120,10 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
   const sidebarX = useSharedValue(screenWidth - 70);
   const sidebarY = useSharedValue(100);
   const dragContext = useSharedValue({ x: 0, y: 0 });
+
+  useEffect(() => {
+    activeColor.current = drawColor;
+  }, [drawColor]);
 
   // Load and Save Annotations
   useEffect(() => {
@@ -163,9 +172,30 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
     }
   };
 
-  const eraseAtPoint = (x: number, y: number) => {
-    setPaths(prev => prev.filter(p => !pathContainsPoint(p.d, x, y) || p.page !== currentPage));
-    setTexts(prev => prev.filter(t => (t && !rectContainsPoint(t, x, y)) || t.page !== currentPage));
+  const eraseAtPoints = (points: { x: number; y: number }[]) => {
+    if (points.length === 0) return;
+    const pathIdsToDelete = new Set<string>();
+    const textIdsToDelete = new Set<string>();
+
+    points.forEach(point => {
+        paths.forEach(p => {
+            if (p.page === currentPage && pathContainsPoint(p.d, point.x, point.y)) {
+                pathIdsToDelete.add(p.id);
+            }
+        });
+        texts.forEach(t => {
+            if (t.page === currentPage && rectContainsPoint(t, point.x, point.y)) {
+                textIdsToDelete.add(t.id);
+            }
+        });
+    });
+
+    if (pathIdsToDelete.size > 0) {
+        setPaths(current => current.filter(p => !pathIdsToDelete.has(p.id)));
+    }
+    if (textIdsToDelete.size > 0) {
+        setTexts(current => current.filter(t => !textIdsToDelete.has(t.id)));
+    }
   };
   
   // --- Gesture Handler Worklets ---
@@ -177,8 +207,7 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
     currentPath.value = null;
   };
   
-  const startTextRect = runOnJS(setDrawingRect);
-  const finishTextRect = runOnJS((rect: RectType | null) => {
+  const finishTextRect = (rect: RectType | null) => {
     if (rect) {
       const finalRect = {
         x: rect.width < 0 ? rect.x + rect.width : rect.x,
@@ -186,45 +215,72 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
         width: Math.abs(rect.width),
         height: Math.abs(rect.height),
       };
-      if (finalRect.width > 5 && finalRect.height > 5) {
+      if (finalRect.width > 10 && finalRect.height > 10) {
         setTextRect(finalRect);
+        setTextInput('');
       }
     }
-    setDrawingRect(null);
-  });
-  
-  const eraseAtPointJS = runOnJS(eraseAtPoint);
+    textGestureRect.value = null;
+  };
+
+  const updateTextSize = (id: string, width: number, height: number) => {
+    setTexts(current => current.map(t => t.id === id ? { ...t, width: Math.max(50, width), height: Math.max(40, height), fontSize: Math.max(10, height * FONT_SIZE_RATIO) } : t));
+  };
 
   // --- Gestures ---
   const pdfDrawGesture = Gesture.Pan()
+    .enabled(mode !== 'cursor')
     .onBegin(e => {
       if (mode === 'draw') {
-        activeColor.current = drawColor;
+        runOnJS(setSelectedTextId)(null);
         currentPath.value = `M${e.x},${e.y}`;
       } else if (mode === 'text') {
-        startTextRect({ x: e.x, y: e.y, width: 0, height: 0 });
+        runOnJS(setSelectedTextId)(null);
+        textGestureRect.value = { x: e.x, y: e.y, width: 0, height: 0 };
       } else if (mode === 'erase') {
-        eraseAtPointJS(e.x, e.y);
+        runOnJS(setSelectedTextId)(null);
+        eraseGesturePoints.value = [{ x: e.x, y: e.y }];
       }
     })
     .onUpdate(e => {
       if (mode === 'draw' && currentPath.value) {
         currentPath.value = `${currentPath.value} L${e.x},${e.y}`;
-      } else if (mode === 'text') {
-        runOnJS(setDrawingRect)(prev => prev ? { ...prev, width: e.x - prev.x, height: e.y - prev.y } : null);
+      } else if (mode === 'text' && textGestureRect.value) {
+        textGestureRect.value = { ...textGestureRect.value, width: e.x - textGestureRect.value.x, height: e.y - textGestureRect.value.y };
       } else if (mode === 'erase') {
-        eraseAtPointJS(e.x, e.y);
+        eraseGesturePoints.value = [...eraseGesturePoints.value, { x: e.x, y: e.y }];
       }
     })
     .onEnd(() => {
         if (mode === 'draw') {
             runOnJS(finishDrawing)(currentPath.value!);
-        } else if (mode === 'text' && drawingRect) {
-            finishTextRect(drawingRect);
+        } else if (mode === 'text') {
+            runOnJS(finishTextRect)(textGestureRect.value);
+        } else if (mode === 'erase') {
+            runOnJS(eraseAtPoints)(eraseGesturePoints.value);
+            eraseGesturePoints.value = [];
         }
     })
     .minDistance(1);
     
+  const resizeGesture = Gesture.Pan()
+    .onBegin(e => {
+        const text = texts.find(t => t.id === selectedTextId);
+        if (text) {
+            resizeDragContext.value = { x: e.x, y: e.y, width: text.width, height: text.height };
+        }
+    })
+    .onUpdate(e => {
+        if (resizeDragContext.value && selectedTextId) {
+            const newWidth = resizeDragContext.value.width + e.translationX;
+            const newHeight = resizeDragContext.value.height + e.translationY;
+            runOnJS(updateTextSize)(selectedTextId, newWidth, newHeight);
+        }
+    })
+    .onEnd(() => {
+        resizeDragContext.value = null;
+    });
+
   const sidebarDragGesture = Gesture.Pan()
     .onStart(() => {
         dragContext.value = { x: sidebarX.value, y: sidebarY.value };
@@ -269,47 +325,54 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
     };
   });
 
+  const animatedRectProps = useAnimatedProps(() => {
+    const rect = textGestureRect.value;
+    if (!rect) return { width: 0, height: 0, x: 0, y: 0 };
+    return {
+        x: rect.width < 0 ? rect.x + rect.width : rect.x,
+        y: rect.height < 0 ? rect.y + rect.height : rect.y,
+        width: Math.abs(rect.width),
+        height: Math.abs(rect.height),
+    };
+  });
+
   // --- Text Handling ---
   const handleConfirmText = () => {
-    if (!textRect || !textInput.trim()) {
-      setTextInput('');
-      setTextRect(null);
-      setSelectedTextIndex(null);
-      return;
-    }
+    if (!textRect) return;
 
-    if (selectedTextIndex !== null) {
-      const originalText = texts[selectedTextIndex];
-      const updatedText = { ...originalText, text: textInput, ...textRect };
-      setTexts(prev => prev.map((t, i) => (i === selectedTextIndex ? updatedText : t)));
+    if (selectedTextId) {
+      setTexts(prev => prev.map(t => t.id === selectedTextId ? { ...t, text: textInput } : t));
     } else {
       const id = Date.now().toString();
       const newText: TextNote = {
         id, text: textInput, ...textRect, color: '#3D3D3D',
-        width: Math.max(textRect.width, 50), height: Math.max(textRect.height, 20), page: currentPage
+        width: Math.max(textRect.width, 50), height: Math.max(textRect.height, 40), page: currentPage, fontSize: DEFAULT_FONT_SIZE,
       };
       setTexts(prev => [...prev, newText]);
       historyRef.current.push({ type: 'text', id });
     }
     setTextInput('');
     setTextRect(null);
-    setSelectedTextIndex(null);
+    setSelectedTextId(null);
   };
 
-  const handleSelectText = (t: TextNote, index: number) => {
-    setSelectedTextIndex(index);
+  const handleSelectText = (t: TextNote) => {
+    if (selectedTextId === t.id) {
+        handleEditText(t);
+    } else {
+        setSelectedTextId(t.id);
+    }
+  };
+
+  const handleEditText = (t: TextNote) => {
+    setSelectedTextId(t.id);
     setTextInput(t.text);
     setTextRect({ x: t.x, y: t.y, width: t.width, height: t.height });
-    setMode('text');
   };
 
-  const handleDeleteText = () => {
-    if (selectedTextIndex !== null) {
-      setTexts(ts => ts.filter((_, idx) => idx !== selectedTextIndex));
-      setSelectedTextIndex(null);
-      setTextInput('');
-      setTextRect(null);
-    }
+  const handleDeleteText = (id: string) => {
+    setTexts(ts => ts.filter(t => t.id !== id));
+    setSelectedTextId(null);
   };
 
   const handlePageInputChange = (text: string) => {
@@ -321,68 +384,73 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
   };
 
   const isHorizontal = sidebarOrientation === 'horizontal';
-
+  
   // --- Component Render ---
   return (
     <GestureHandlerRootView style={styles.container}>
-      <View style={styles.viewer}>
-        <Pdf 
-            source={{ uri }} 
-            style={styles.pdf} 
-            page={currentPage}
-            onLoadComplete={(numberOfPages) => setTotalPages(numberOfPages)}
-            onPageChanged={(page) => {
-                setCurrentPage(page);
-                setPageInput(page.toString());
-            }}
-        />
-        <GestureDetector gesture={pdfDrawGesture}>
-          <Svg style={StyleSheet.absoluteFill} pointerEvents="box-none">
-            {paths.filter(p => p.page === currentPage).map(p => (
-              <Path key={p.id} d={p.d} stroke={p.color} strokeWidth={4} fill="none" strokeLinecap="round" strokeLinejoin="round"/>
-            ))}
-            <AnimatedPath
-              animatedProps={animatedPathProps}
-              stroke={activeColor.current}
-              strokeWidth={4}
-              fill="none"
-              strokeLinecap="round"
-              strokeLinejoin="round"
+        <View style={styles.viewer}>
+            <Pdf 
+                source={{ uri }} 
+                style={styles.pdf} 
+                page={currentPage}
+                onLoadComplete={(numberOfPages) => setTotalPages(numberOfPages)}
+                onPageChanged={(page) => {
+                    setCurrentPage(page);
+                    setPageInput(page.toString());
+                }}
             />
-            {texts.filter(t => t.page === currentPage).map((t, i) => (
-              <React.Fragment key={t.id}>
-                <Rect
-                  x={t.x} y={t.y} width={t.width} height={t.height}
-                  stroke={selectedTextIndex === i ? '#D2B48C' : 'transparent'}
-                  strokeWidth={2} fill="transparent"
-                  onPress={() => handleSelectText(t, i)}
+            <GestureDetector gesture={pdfDrawGesture}>
+                <View style={StyleSheet.absoluteFill} />
+            </GestureDetector>
+            <Svg style={StyleSheet.absoluteFill} pointerEvents="box-none">
+                {paths.filter(p => p.page === currentPage).map(p => (
+                <Path key={p.id} d={p.d} stroke={p.color} strokeWidth={4} fill="none" strokeLinecap="round" strokeLinejoin="round"/>
+                ))}
+                <AnimatedPath
+                animatedProps={animatedPathProps}
+                stroke={activeColor.current}
+                strokeWidth={4}
+                fill="none"
+                strokeLinecap="round"
+                strokeLinejoin="round"
                 />
-                <SvgText x={t.x + 8} y={t.y + 20} fill={t.color} fontSize={18} fontWeight="bold">
-                  {t.text}
-                </SvgText>
-              </React.Fragment>
-            ))}
-            {drawingRect && (
-              <Rect
-                x={drawingRect.x} y={drawingRect.y} width={drawingRect.width} height={drawingRect.height}
-                stroke="#D2B48C" strokeDasharray="6" strokeWidth={2} fill="rgba(210,180,140,0.1)"
-              />
-            )}
-          </Svg>
-        </GestureDetector>
-      </View>
+                {texts.filter(t => t.page === currentPage).map((t) => (
+                    <React.Fragment key={t.id}>
+                        <Rect
+                            x={t.x} y={t.y} width={t.width} height={t.height}
+                            stroke={selectedTextId === t.id ? '#A0522D' : 'transparent'}
+                            strokeWidth={2}
+                            strokeDasharray={selectedTextId === t.id ? "6" : "none"}
+                            fill="transparent"
+                            onPress={() => mode === 'cursor' ? handleSelectText(t) : undefined}
+                            pointerEvents={mode === 'cursor' ? 'auto' : 'none'}
+                        />
+                        <SvgText x={t.x + 8} y={t.y + t.height / 2 + t.fontSize / 3} fill={t.color} fontSize={t.fontSize} fontWeight="500" pointerEvents="none">
+                        {t.text}
+                        </SvgText>
+                        {selectedTextId === t.id && (
+                            <>
+                                <Rect x={t.x - 8} y={t.y - 8} width={16} height={16} fill="#D11A2A" onPress={() => handleDeleteText(t.id)} pointerEvents="auto" />
+                                <GestureDetector gesture={resizeGesture}>
+                                    <Rect x={t.x + t.width - 8} y={t.y + t.height - 8} width={16} height={16} fill="#A0522D" pointerEvents="auto"/>
+                                </GestureDetector>
+                            </>
+                        )}
+                    </React.Fragment>
+                ))}
+                <AnimatedRect
+                    animatedProps={animatedRectProps}
+                    stroke="#D2B48C" strokeDasharray="6" strokeWidth={2} fill="rgba(210,180,140,0.1)"
+                />
+            </Svg>
+        </View>
 
-      {textRect && mode === 'text' && (
+      {textRect && (
         <View style={styles.textInputContainer}>
           <TextInput value={textInput} onChangeText={setTextInput} placeholder="Add a note..." style={styles.input} autoFocus multiline />
           <TouchableOpacity onPress={handleConfirmText} style={styles.addTextBtn}>
             <Ionicons name="checkmark-circle" size={32} color="#8FBC8F"/>
           </TouchableOpacity>
-          {selectedTextIndex !== null && (
-            <TouchableOpacity onPress={handleDeleteText} style={styles.addTextBtn}>
-                <Ionicons name="trash-bin" size={28} color="#CD5C5C"/>
-            </TouchableOpacity>
-          )}
         </View>
       )}
 
@@ -439,6 +507,9 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
                           <Ionicons name={isHorizontal ? "chevron-down" : "chevron-forward"} size={26} color="#555" />
                       </TouchableOpacity>
                       <View style={[styles.toolGrid, isHorizontal && styles.toolGridHorizontal]}>
+                          <TouchableOpacity onPress={() => setMode('cursor')} style={styles.toolBtn}>
+                              <MaterialCommunityIcons name="cursor-default" size={28} color={mode === 'cursor' ? '#A0522D' : '#333'}/>
+                          </TouchableOpacity>
                           <TouchableOpacity onPress={() => setMode('draw')} style={styles.toolBtn}>
                               <Ionicons name="pencil-outline" size={28} color={mode === 'draw' ? '#A0522D' : '#333'}/>
                           </TouchableOpacity>
@@ -455,7 +526,7 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
                       {mode === 'draw' && (
                            <View style={[styles.colorRow, isHorizontal && styles.colorRowHorizontal]}>
                                 {['#CD5C5C', '#8FBC8F', '#6495ED', '#3D3D3D'].map(c => (
-                                <TouchableOpacity key={c} onPress={() => setDrawColor(c)} style={[ styles.colorSwatch, { backgroundColor: c, transform: [{ scale: drawColor === c ? 1 : 0.8 }] }]} />
+                                <TouchableOpacity key={c} onPress={() => { setDrawColor(c); activeColor.current = c; }} style={[ styles.colorSwatch, { backgroundColor: c, transform: [{ scale: drawColor === c ? 1 : 0.8 }] }]} />
                                 ))}
                                 <TouchableOpacity onPress={() => setPickerVisible(true)} style={[styles.colorSwatch, styles.centerContent, { backgroundColor: '#eee'}]}>
                                     <Ionicons name="eyedrop-outline" size={20} color="#333" />
@@ -479,7 +550,7 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
       <Modal visible={pickerVisible} transparent animationType="fade" onRequestClose={() => setPickerVisible(false)}>
         <TouchableOpacity style={styles.pickerOverlay} activeOpacity={1} onPress={() => setPickerVisible(false)}>
           <View style={styles.colorPickerContainer}>
-            <ColorPalette onChange={(color: string) => setDrawColor(color)} value={drawColor}
+            <ColorPalette onChange={(color: string) => { setDrawColor(color); activeColor.current = color; }} value={drawColor}
               colors={['#c0392b', '#e74c3c', '#9b59b6', '#8e44ad', '#2980b9', '#3498db', '#1abc9c', '#16a085', '#27ae60', '#2ecc71', '#f1c40f', '#f39c12', '#e67e22', '#d35400', '#7f8c8d', '#000000']}
               title={"Select a color:"}
             />
