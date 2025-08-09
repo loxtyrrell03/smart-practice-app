@@ -1,5 +1,6 @@
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import Slider from '@react-native-community/slider';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Dimensions,
@@ -12,7 +13,6 @@ import {
   View
 } from 'react-native';
 import ColorPalette from 'react-native-color-palette';
-import Slider from '@react-native-community/slider';
 import {
   Gesture,
   GestureDetector,
@@ -625,10 +625,6 @@ const styles = StyleSheet.create({
     },
     // --- Pager ---
     pagerBar: {
-      position: 'absolute',
-      left: 0,
-      right: 0,
-      bottom: 0,
       height: 84,
       backgroundColor: '#FFFDF5',
       flexDirection: 'row',
