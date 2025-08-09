@@ -91,7 +91,7 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
   // --- State ---
   const [paths, setPaths] = useState<DrawPath[]>([]);
   const currentPath = useSharedValue<string | null>(null);
-  const [mode, setMode] = useState<'draw' | 'text' | 'erase' | 'cursor'>('draw');
+  const [mode, setMode] = useState<'draw' | 'text' | 'erase' | 'cursor'>('cursor');
   const [drawColor, setDrawColor] = useState<string>('#CD5C5C');
   const activeColor = useRef<string>(drawColor);
   const [texts, setTexts] = useState<TextNote[]>([]);
@@ -122,6 +122,23 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
   useEffect(() => {
     activeColor.current = drawColor;
   }, [drawColor]);
+
+  // Helper to toggle tool selection; pressing an active tool deselects to cursor
+  const setModeToggled = (next: 'draw' | 'text' | 'erase' | 'cursor') => {
+    setMode(prev => {
+      const target = prev === next ? 'cursor' : next;
+      // when switching back to cursor, clear transient gesture state so PDF swipes work
+      if (target === 'cursor') {
+        currentPath.value = null;
+        textGestureRect.value = null;
+        eraseGesturePoints.value = [];
+        setSelectedTextId(null);
+        setTextRect(null);
+        setTextInput('');
+      }
+      return target as typeof prev;
+    });
+  };
 
   // Load and Save Annotations
   useEffect(() => {
@@ -535,16 +552,16 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
                 <Ionicons name={isHorizontal ? "chevron-down" : "chevron-forward"} size={26} color="#555" />
               </TouchableOpacity>
               <View style={[styles.toolGrid, isHorizontal && styles.toolGridHorizontal]}>
-                <TouchableOpacity onPress={() => setMode('cursor')} style={styles.toolBtn}>
+                <TouchableOpacity onPress={() => setModeToggled('cursor')} style={styles.toolBtn}>
                   <MaterialCommunityIcons name="cursor-default" size={28} color={mode === 'cursor' ? '#A0522D' : '#333'} />
                 </TouchableOpacity>
-                <TouchableOpacity onPress={() => setMode('draw')} style={styles.toolBtn}>
+                <TouchableOpacity onPress={() => setModeToggled('draw')} style={styles.toolBtn}>
                   <Ionicons name="pencil-outline" size={28} color={mode === 'draw' ? '#A0522D' : '#333'} />
                 </TouchableOpacity>
-                <TouchableOpacity onPress={() => setMode('text')} style={styles.toolBtn}>
+                <TouchableOpacity onPress={() => setModeToggled('text')} style={styles.toolBtn}>
                   <Ionicons name="text-outline" size={28} color={mode === 'text' ? '#A0522D' : '#333'} />
                 </TouchableOpacity>
-                <TouchableOpacity onPress={() => setMode('erase')} style={styles.toolBtn}>
+                <TouchableOpacity onPress={() => setModeToggled('erase')} style={styles.toolBtn}>
                   <MaterialCommunityIcons name="eraser-variant" size={28} color={mode === 'erase' ? '#A0522D' : '#333'} />
                 </TouchableOpacity>
                 <TouchableOpacity onPress={undoLast} style={styles.toolBtn}>
