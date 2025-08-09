@@ -54,7 +54,7 @@ type HistoryItem = { type: 'path' | 'text'; id: string };
 type RectType = { x: number; y: number; width: number; height: number };
 
 // --- Helper Functions ---
-function pathContainsPoint(d: string, x: number, y: number, threshold = 15): boolean {
+function pathContainsPoint(d: string, x: number, y: number, threshold = 24): boolean {
   const coords = d.match(/[-\d.]+/g)?.map(Number);
   if (!coords) return false;
   for (let i = 0; i < coords.length; i += 2) {
@@ -71,7 +71,7 @@ function rectContainsPoint(
   rect: RectType,
   x: number,
   y: number,
-  threshold = 10
+  threshold = 16
 ): boolean {
   const left = Math.min(rect.x, rect.x + rect.width) - threshold;
   const right = Math.max(rect.x, rect.x + rect.width) + threshold;
@@ -105,14 +105,13 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
   // --- Animated Shared Values for Gestures ---
   const textGestureRect = useSharedValue<RectType | null>(null);
   const eraseGesturePoints = useSharedValue<{ x: number; y: number }[]>([]);
+  const moveDragContext = useSharedValue<{ startX: number; startY: number; textX: number; textY: number } | null>(null);
   const resizeDragContext = useSharedValue<{ x: number; y: number; width: number; height: number } | null>(null);
 
   // --- Page Navigation State ---
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [totalPages, setTotalPages] = useState<number>(0);
-  const [pageInput, setPageInput] = useState<string>('1');
-  const [isNavVisible, setIsNavVisible] = useState(true);
-  const navBarY = useSharedValue(100);
+  const [pagerCollapsed, setPagerCollapsed] = useState<boolean>(false);
 
   // --- Sidebar State & Animation ---
   const [sidebarVisible, setSidebarVisible] = useState(false);
@@ -153,12 +152,7 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
     AsyncStorage.setItem(STORAGE_KEY, dataToSave).catch(e => console.warn('Save error', e));
   }, [paths, texts, STORAGE_KEY]);
 
-  // Animate Nav Bar
-  useEffect(() => {
-    if (totalPages > 1) {
-        navBarY.value = withTiming(isNavVisible ? 0 : 100, { duration: 250 });
-    }
-  }, [isNavVisible, totalPages]);
+  // no-op: old animated nav removed
 
 
   const undoLast = () => {
@@ -261,7 +255,14 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
             eraseGesturePoints.value = [];
         }
     })
-    .minDistance(1);
+    .minDistance(0);
+
+  // Allow simple tap erasing without dragging
+  const eraseTapGesture = Gesture.Tap()
+    .enabled(mode === 'erase')
+    .onStart(e => {
+      runOnJS(eraseAtPoints)([{ x: e.x, y: e.y }]);
+    });
     
   const resizeGesture = Gesture.Pan()
     .onBegin(e => {
@@ -313,11 +314,7 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
     };
   });
   
-  const animatedNavBarStyle = useAnimatedStyle(() => {
-      return {
-          transform: [{ translateY: navBarY.value }]
-      }
-  })
+  // removed old animated nav bar style
 
   const animatedPathProps = useAnimatedProps<PathProps>(() => {
     return {
@@ -334,6 +331,18 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
         width: Math.abs(rect.width),
         height: Math.abs(rect.height),
     };
+  });
+
+  // Visualize eraser stroke while dragging
+  const animatedErasePathProps = useAnimatedProps<PathProps>(() => {
+    const pts = eraseGesturePoints.value;
+    if (!pts || pts.length === 0) return { d: '' } as any;
+    let d = `M${pts[0].x},${pts[0].y}`;
+    for (let i = 1; i < pts.length; i++) {
+      const p = pts[i];
+      d += ` L${p.x},${p.y}`;
+    }
+    return { d } as any;
   });
 
   // --- Text Handling ---
@@ -370,18 +379,41 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
     setTextRect({ x: t.x, y: t.y, width: t.width, height: t.height });
   };
 
+  const updateTextPosition = (id: string, x: number, y: number) => {
+    setTexts(current => current.map(t => t.id === id ? { ...t, x, y } : t));
+  };
+
+  // Drag selected text note
+  const moveTextGesture = Gesture.Pan()
+    .enabled(!!selectedTextId && mode === 'cursor')
+    .onBegin(e => {
+      const t = texts.find(tx => tx.id === selectedTextId);
+      if (t) {
+        moveDragContext.value = { startX: e.x, startY: e.y, textX: t.x, textY: t.y };
+      }
+    })
+    .onUpdate(e => {
+      if (moveDragContext.value && selectedTextId) {
+        // Use translation to avoid wobble from moving target origin
+        const dx = e.translationX;
+        const dy = e.translationY;
+        runOnJS(updateTextPosition)(
+          selectedTextId,
+          moveDragContext.value.textX + dx,
+          moveDragContext.value.textY + dy
+        );
+      }
+    })
+    .onEnd(() => {
+      moveDragContext.value = null;
+    });
+
   const handleDeleteText = (id: string) => {
     setTexts(ts => ts.filter(t => t.id !== id));
     setSelectedTextId(null);
   };
 
-  const handlePageInputChange = (text: string) => {
-    const num = parseInt(text, 10);
-    if (!isNaN(num) && num > 0 && num <= totalPages) {
-      setCurrentPage(num);
-    }
-    setPageInput(text);
-  };
+  // removed page input logic; pager uses arrows + slider only
 
   const isHorizontal = sidebarOrientation === 'horizontal';
   
@@ -393,18 +425,16 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
                 source={{ uri }} 
                 style={styles.pdf} 
                 page={currentPage}
+                horizontal
+                enablePaging
                 onLoadComplete={(numberOfPages) => setTotalPages(numberOfPages)}
                 onPageChanged={(page) => {
                     setCurrentPage(page);
-                    setPageInput(page.toString());
                 }}
             />
-            <GestureDetector gesture={pdfDrawGesture}>
-                <View style={StyleSheet.absoluteFill} />
-            </GestureDetector>
             <Svg style={StyleSheet.absoluteFill} pointerEvents="box-none">
                 {paths.filter(p => p.page === currentPage).map(p => (
-                <Path key={p.id} d={p.d} stroke={p.color} strokeWidth={4} fill="none" strokeLinecap="round" strokeLinejoin="round"/>
+                <Path key={p.id} d={p.d} stroke={p.color} strokeWidth={4} fill="none" strokeLinecap="round" strokeLinejoin="round" pointerEvents="none"/>
                 ))}
                 <AnimatedPath
                 animatedProps={animatedPathProps}
@@ -413,18 +443,32 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
                 fill="none"
                 strokeLinecap="round"
                 strokeLinejoin="round"
+                pointerEvents="none"
                 />
                 {texts.filter(t => t.page === currentPage).map((t) => (
                     <React.Fragment key={t.id}>
-                        <Rect
+                        {selectedTextId === t.id ? (
+                          <GestureDetector gesture={moveTextGesture}>
+                            <Rect
+                              x={t.x} y={t.y} width={t.width} height={t.height}
+                              stroke={'#A0522D'}
+                              strokeWidth={2}
+                              strokeDasharray={"6"}
+                              fill="transparent"
+                              onPress={() => mode === 'cursor' ? handleSelectText(t) : undefined}
+                              pointerEvents={mode === 'cursor' ? 'auto' : 'none'}
+                            />
+                          </GestureDetector>
+                        ) : (
+                          <Rect
                             x={t.x} y={t.y} width={t.width} height={t.height}
-                            stroke={selectedTextId === t.id ? '#A0522D' : 'transparent'}
+                            stroke={'transparent'}
                             strokeWidth={2}
-                            strokeDasharray={selectedTextId === t.id ? "6" : "none"}
                             fill="transparent"
                             onPress={() => mode === 'cursor' ? handleSelectText(t) : undefined}
                             pointerEvents={mode === 'cursor' ? 'auto' : 'none'}
-                        />
+                          />
+                        )}
                         <SvgText x={t.x + 8} y={t.y + t.height / 2 + t.fontSize / 3} fill={t.color} fontSize={t.fontSize} fontWeight="500" pointerEvents="none">
                         {t.text}
                         </SvgText>
@@ -442,7 +486,57 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
                     animatedProps={animatedRectProps}
                     stroke="#D2B48C" strokeDasharray="6" strokeWidth={2} fill="rgba(210,180,140,0.1)"
                 />
+                {/* Eraser stroke preview */}
+                {mode === 'erase' && (
+                  <AnimatedPath
+                    animatedProps={animatedErasePathProps}
+                    stroke="#000"
+                    strokeOpacity={0.25}
+                    strokeWidth={22}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeDasharray="10,10"
+                    fill="none"
+                    pointerEvents="none"
+                  />
+                )}
             </Svg>
+            {/* Topmost gesture catcher for draw/text/erase modes */}
+            <GestureDetector gesture={Gesture.Simultaneous(pdfDrawGesture, eraseTapGesture)}>
+                <View style={StyleSheet.absoluteFill} pointerEvents={mode === 'cursor' ? 'none' : 'auto'} />
+            </GestureDetector>
+            {/* --- Page Pager (always above PDF by default) --- */}
+            {totalPages > 1 && (
+              pagerCollapsed ? (
+                <TouchableOpacity style={[styles.pagerToggleCollapsed, { zIndex: 100, elevation: 100 }]} onPress={() => setPagerCollapsed(false)}>
+                  <Ionicons name="chevron-up-outline" size={22} color="#5C5C5C"/>
+                </TouchableOpacity>
+              ) : (
+                <View style={[styles.pagerBar, { zIndex: 100, elevation: 100 }]}>
+                  <TouchableOpacity onPress={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1}>
+                    <Ionicons name="chevron-back-circle-outline" size={36} color={currentPage === 1 ? '#C0C0C0' : '#5C5C5C'} />
+                  </TouchableOpacity>
+                  <Slider
+                    style={styles.pagerSlider}
+                    minimumValue={1}
+                    maximumValue={totalPages}
+                    step={1}
+                    value={currentPage}
+                    onSlidingComplete={(value: number) => setCurrentPage(value)}
+                    minimumTrackTintColor="#A0522D"
+                    maximumTrackTintColor="#D3D3D3"
+                    thumbTintColor="#FFFDF5"
+                  />
+                  <Text style={styles.pageIndicator}>{currentPage} / {totalPages}</Text>
+                  <TouchableOpacity onPress={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages}>
+                    <Ionicons name="chevron-forward-circle-outline" size={36} color={currentPage === totalPages ? '#C0C0C0' : '#5C5C5C'} />
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.pagerMinBtn} onPress={() => setPagerCollapsed(true)}>
+                    <Ionicons name="chevron-down-outline" size={22} color="#5C5C5C"/>
+                  </TouchableOpacity>
+                </View>
+              )
+            )}
         </View>
 
       {textRect && (
@@ -454,46 +548,37 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
         </View>
       )}
 
-      {/* --- Page Navigation Bar --- */}
-      {totalPages > 1 && !isNavVisible && (
-          <TouchableOpacity style={styles.navToggleBtn} onPress={() => setIsNavVisible(true)}>
-              <Ionicons name="chevron-up-outline" size={28} color="#5C5C5C"/>
+      {/* --- Page Pager (always above PDF by default) --- */}
+      {totalPages > 1 && (
+        pagerCollapsed ? (
+          <TouchableOpacity style={styles.pagerToggleCollapsed} onPress={() => setPagerCollapsed(false)}>
+            <Ionicons name="chevron-up-outline" size={22} color="#5C5C5C"/>
           </TouchableOpacity>
-      )}
-      { totalPages > 1 && (
-        <Animated.View style={[styles.navBar, animatedNavBarStyle]}>
+        ) : (
+          <View style={styles.pagerBar}>
             <TouchableOpacity onPress={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1}>
-                <Ionicons name="chevron-back-circle-outline" size={36} color={currentPage === 1 ? '#C0C0C0' : '#5C5C5C'} />
+              <Ionicons name="chevron-back-circle-outline" size={36} color={currentPage === 1 ? '#C0C0C0' : '#5C5C5C'} />
             </TouchableOpacity>
-            <View style={styles.navCenter}>
-                <TextInput 
-                    style={styles.pageInput}
-                    value={pageInput}
-                    onChangeText={setPageInput}
-                    onSubmitEditing={() => handlePageInputChange(pageInput)}
-                    keyboardType="number-pad"
-                    returnKeyType="done"
-                />
-                <Text style={styles.pageText}>/ {totalPages}</Text>
-            </View>
-            <Slider 
-                style={styles.slider}
-                minimumValue={1}
-                maximumValue={totalPages}
-                step={1}
-                value={currentPage}
-                onSlidingComplete={(value: number) => setCurrentPage(value)}
-                minimumTrackTintColor="#A0522D"
-                maximumTrackTintColor="#D3D3D3"
-                thumbTintColor="#FFFDF5"
+            <Slider
+              style={styles.pagerSlider}
+              minimumValue={1}
+              maximumValue={totalPages}
+              step={1}
+              value={currentPage}
+              onSlidingComplete={(value: number) => setCurrentPage(value)}
+              minimumTrackTintColor="#A0522D"
+              maximumTrackTintColor="#D3D3D3"
+              thumbTintColor="#FFFDF5"
             />
-             <TouchableOpacity onPress={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages}>
-                <Ionicons name="chevron-forward-circle-outline" size={36} color={currentPage === totalPages ? '#C0C0C0' : '#5C5C5C'} />
+            <Text style={styles.pageIndicator}>{currentPage} / {totalPages}</Text>
+            <TouchableOpacity onPress={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages}>
+              <Ionicons name="chevron-forward-circle-outline" size={36} color={currentPage === totalPages ? '#C0C0C0' : '#5C5C5C'} />
             </TouchableOpacity>
-            <TouchableOpacity style={styles.navCloseBtn} onPress={() => setIsNavVisible(false)}>
-                 <Ionicons name="chevron-down-outline" size={28} color="#5C5C5C"/>
+            <TouchableOpacity style={styles.pagerMinBtn} onPress={() => setPagerCollapsed(true)}>
+              <Ionicons name="chevron-down-outline" size={22} color="#5C5C5C"/>
             </TouchableOpacity>
-        </Animated.View>
+          </View>
+        )
       )}
 
 
@@ -680,77 +765,53 @@ const styles = StyleSheet.create({
         padding: 20,
     },
 
-    // --- Page Navigation Styles ---
-    navToggleBtn: {
+    // --- Pager Styles ---
+    pagerToggleCollapsed: {
         position: 'absolute',
-        bottom: 0,
+        bottom: 6,
         left: '50%',
-        marginLeft: -50, // half of width
-        width: 100,
-        height: 40,
+        marginLeft: -24,
+        width: 48,
+        height: 28,
         backgroundColor: '#FFFDF5',
-        borderTopLeftRadius: 20,
-        borderTopRightRadius: 20,
+        borderRadius: 14,
         justifyContent: 'center',
         alignItems: 'center',
         borderWidth: 1,
         borderColor: '#EAE7DC',
-        borderBottomWidth: 0,
-        elevation: 5,
-        zIndex: 10,
+        elevation: 50,
+        zIndex: 50,
     },
-    navBar: {
+    pagerBar: {
         position: 'absolute',
         bottom: 0,
         left: 0,
         right: 0,
-        height: 100,
+        height: 90,
         backgroundColor: '#FFFDF5',
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
-        paddingHorizontal: 20,
-        paddingBottom: 25, // Safe area for home indicator
+        paddingHorizontal: 16,
+        paddingBottom: 20,
         borderTopWidth: 1,
         borderTopColor: '#EAE7DC',
-        elevation: 10,
-        zIndex: 10,
+        elevation: 50,
+        zIndex: 50,
     },
-    navCloseBtn: {
-        position: 'absolute',
-        bottom: 75,
-        left: '50%',
-        marginLeft: -22,
-        width: 44,
-        height: 44,
-        justifyContent: 'center',
-        alignItems: 'center',
-    },
-    navCenter: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        backgroundColor: '#EAE7DC',
-        borderRadius: 12,
-        paddingHorizontal: 5,
-    },
-    pageInput: {
-        borderRadius: 8,
-        paddingHorizontal: 10,
-        paddingVertical: 8,
-        width: 50,
-        textAlign: 'center',
-        fontSize: 16,
-        fontWeight: 'bold',
-        color: '#3D3D3D',
-    },
-    pageText: {
-        fontSize: 16,
-        color: '#555',
-        marginRight: 10,
-    },
-    slider: {
+    pagerSlider: {
         flex: 1,
         height: 40,
         marginHorizontal: 10,
+    },
+    pageIndicator: {
+        width: 70,
+        textAlign: 'center',
+        fontSize: 14,
+        color: '#555',
+    },
+    pagerMinBtn: {
+        marginLeft: 8,
+        padding: 6,
     },
 });
