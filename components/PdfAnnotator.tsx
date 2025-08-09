@@ -98,6 +98,9 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
   const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
   const [textInput, setTextInput] = useState<string>('');
   const [textRect, setTextRect] = useState<RectType | null>(null);
+  // Track which page a gesture started on to avoid mis-attribution when navigating mid-flow
+  const gesturePageRef = useRef<number>(1);
+  const pendingTextPageRef = useRef<number | null>(null);
   const [pickerVisible, setPickerVisible] = useState<boolean>(false);
   const historyRef = useRef<HistoryItem[]>([]);
   const STORAGE_KEY = `annotations-${pdfId}`;
@@ -210,7 +213,7 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
   const finishDrawing = (path: string) => {
     if (!path) return;
     const id = Date.now().toString();
-    setPaths(prev => [...prev, { id, d: path, color: activeColor.current, page: currentPage }]);
+    setPaths(prev => [...prev, { id, d: path, color: activeColor.current, page: gesturePageRef.current }]);
     historyRef.current.push({ type: 'path', id });
     currentPath.value = null;
   };
@@ -239,12 +242,16 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
   const pdfDrawGesture = Gesture.Pan()
     .enabled(mode !== 'cursor')
     .onBegin(e => {
+      // Pin page at the start of any drawing/text/erase gesture
+      gesturePageRef.current = currentPage;
       if (mode === 'draw') {
         runOnJS(setSelectedTextId)(null);
         currentPath.value = `M${e.x},${e.y}`;
       } else if (mode === 'text') {
         runOnJS(setSelectedTextId)(null);
         textGestureRect.value = { x: e.x, y: e.y, width: 0, height: 0 };
+        // Remember which page this text box belongs to
+        pendingTextPageRef.current = currentPage;
       } else if (mode === 'erase') {
         runOnJS(setSelectedTextId)(null);
         eraseGesturePoints.value = [{ x: e.x, y: e.y }];
@@ -363,7 +370,7 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
       const id = Date.now().toString();
       const newText: TextNote = {
         id, text: textInput, ...textRect, color: '#3D3D3D',
-        width: Math.max(textRect.width, 50), height: Math.max(textRect.height, 40), page: currentPage, fontSize: DEFAULT_FONT_SIZE,
+        width: Math.max(textRect.width, 50), height: Math.max(textRect.height, 40), page: pendingTextPageRef.current ?? currentPage, fontSize: DEFAULT_FONT_SIZE,
       };
       setTexts(prev => [...prev, newText]);
       historyRef.current.push({ type: 'text', id });
@@ -371,6 +378,7 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
     setTextInput('');
     setTextRect(null);
     setSelectedTextId(null);
+    pendingTextPageRef.current = null;
   };
 
   const handleSelectText = (t: TextNote) => {
@@ -548,7 +556,7 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
         <Animated.View style={[styles.sidebarContainer, animatedSidebarStyle]}>
           {sidebarVisible ? (
             <View style={[styles.sidebarExpanded, isHorizontal && styles.sidebarExpandedHorizontal]}>
-              <TouchableOpacity onPress={() => setSidebarVisible(false)} style={styles.sidebarHeader}>
+              <TouchableOpacity onPress={() => { setModeToggled('cursor'); setSidebarVisible(false); }} style={styles.sidebarHeader}>
                 <Ionicons name={isHorizontal ? "chevron-down" : "chevron-forward"} size={26} color="#555" />
               </TouchableOpacity>
               <View style={[styles.toolGrid, isHorizontal && styles.toolGridHorizontal]}>
