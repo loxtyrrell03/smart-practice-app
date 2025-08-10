@@ -118,6 +118,8 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
   const [totalPages, setTotalPages] = useState<number>(0);
   const [isPageSettling, setIsPageSettling] = useState<boolean>(false);
   const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [navVisible, setNavVisible] = useState<boolean>(false);
+  const [pageInput, setPageInput] = useState<string>('1');
 
   // --- Sidebar State & Animation ---
   const [sidebarVisible, setSidebarVisible] = useState(false);
@@ -420,6 +422,47 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
   });
 
   // --- Text Handling ---
+  const goToPage = (n: number) => {
+    const clamped = Math.max(1, Math.min(totalPages || 1, n));
+    currentPageRef.current = clamped;
+    setCurrentPage(clamped);
+    setPageInput(String(clamped));
+    pdfRef.current?.setPage?.(clamped);
+  };
+
+  const goPrevPage = () => {
+    goToPage((currentPageRef.current || 1) - 1);
+  };
+
+  const goNextPage = () => {
+    goToPage((currentPageRef.current || 1) + 1);
+  };
+
+  // --- Cursor-mode swipe and tap navigation ---
+  const swipeGesture = Gesture.Pan()
+    .enabled(mode === 'cursor')
+    .minDistance(20)
+    .onEnd(e => {
+      const dx = e.translationX;
+      if (Math.abs(dx) > 40) {
+        if (dx < 0) {
+          runOnJS(goNextPage)();
+        } else {
+          runOnJS(goPrevPage)();
+        }
+      }
+    });
+
+  const leftTapGesture = Gesture.Tap()
+    .enabled(mode === 'cursor')
+    .onEnd(() => { runOnJS(goPrevPage)(); })
+    .maxDuration(250);
+
+  const rightTapGesture = Gesture.Tap()
+    .enabled(mode === 'cursor')
+    .onEnd(() => { runOnJS(goNextPage)(); })
+    .maxDuration(250);
+
   const handleConfirmText = () => {
     if (!textRect) return;
 
@@ -521,18 +564,28 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
             source={{ uri }}
             style={styles.pdf}
             page={currentPage}
-            horizontal
-            enablePaging
+            singlePage
             onLoadComplete={(numberOfPages) => { setTotalPages(numberOfPages); }}
             onPageChanged={(page) => {
               currentPageRef.current = page;
               setCurrentPage(page);
-              setIsPageSettling(true);
-              if (settleTimer.current) clearTimeout(settleTimer.current);
-              settleTimer.current = setTimeout(() => setIsPageSettling(false), 200);
+              setPageInput(String(page));
+              // No settle animation; page changes are instantaneous
+              setIsPageSettling(false);
             }}
           />
           <Svg style={StyleSheet.absoluteFill} pointerEvents="box-none">
+            {/* Center/background tap to deselect when in cursor mode */}
+            {mode === 'cursor' && (
+              <Rect
+                x={0}
+                y={0}
+                width={screenWidth}
+                height={screenHeight}
+                fill="transparent"
+                onPress={() => { setSelectedTextId(null); setTextRect(null); }}
+              />
+            )}
             {(pathsByPage[currentPage] || []).map(p => (
               <Path key={p.id} d={p.d} stroke={p.color} strokeWidth={4} fill="none" strokeLinecap="round" strokeLinejoin="round" pointerEvents="none" />
             ))}
@@ -601,33 +654,100 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
             )}
           </Svg>
           <GestureDetector gesture={Gesture.Simultaneous(pdfDrawGesture, eraseTapGesture)}>
-            <View style={StyleSheet.absoluteFill} pointerEvents={(!isPageSettling && mode !== 'cursor') ? 'auto' : 'none'} />
+            <View style={StyleSheet.absoluteFill} pointerEvents={(mode !== 'cursor') ? 'auto' : 'none'} />
           </GestureDetector>
+
+          {/* Cursor-mode swipe anywhere */}
+          {mode === 'cursor' && (
+            <GestureDetector gesture={swipeGesture}>
+              <View style={StyleSheet.absoluteFill} pointerEvents="box-none" />
+            </GestureDetector>
+          )}
+
+          {/* Cursor-mode left/right tap zones for page turns */}
+          {mode === 'cursor' && (
+            <>
+              <GestureDetector gesture={leftTapGesture}>
+                <View style={[styles.edgeNavZone, { left: 0, width: screenWidth * 0.25 }]} />
+              </GestureDetector>
+              <GestureDetector gesture={rightTapGesture}>
+                <View style={[styles.edgeNavZone, { right: 0, width: screenWidth * 0.25 }]} />
+              </GestureDetector>
+            </>
+          )}
+
+          {/* Bottom Page Navigator (overlay) */}
+          {navVisible && (
+            <View style={[styles.pagerBar, { paddingBottom: Math.max(10, insets.bottom) }]}>
+              <TouchableOpacity
+                onPress={() => { goToPage((currentPageRef.current || 1) - 1); }}
+                disabled={currentPage <= 1 || totalPages <= 1}
+              >
+                <Ionicons name="arrow-back-circle-outline" size={32} color={(currentPage <= 1 || totalPages <= 1) ? '#C0C0C0' : '#5C5C5C'} />
+              </TouchableOpacity>
+              <Slider
+                style={styles.pagerSlider}
+                minimumValue={1}
+                maximumValue={Math.max(1, totalPages)}
+                step={1}
+                value={Math.min(currentPage, Math.max(1, totalPages || 1))}
+                onSlidingComplete={(value: number) => { goToPage(value); }}
+                minimumTrackTintColor="#A0522D"
+                maximumTrackTintColor="#D3D3D3"
+                thumbTintColor="#FFFDF5"
+              />
+              <View style={styles.pageJumpRow}>
+                <Text style={styles.pageIndicator}>{currentPage} / {totalPages}</Text>
+                <View style={styles.pageJumpBox}>
+                  <Text style={styles.pageJumpLabel}>Pg</Text>
+                  <TextInput
+                    value={pageInput}
+                    onChangeText={(t) => setPageInput(t.replace(/[^0-9]/g, ''))}
+                    keyboardType="numeric"
+                    style={styles.pageInput}
+                    placeholder="#"
+                    maxLength={String(Math.max(1, totalPages)).length}
+                  />
+                  <TouchableOpacity
+                    onPress={() => { const n = parseInt(pageInput || '1', 10); if (!isNaN(n)) goToPage(n); }}
+                    style={styles.pageGoBtn}
+                    disabled={totalPages < 1}
+                  >
+                    <Ionicons name="checkmark-circle" size={22} color={totalPages < 1 ? '#C0C0C0' : '#8FBC8F'} />
+                  </TouchableOpacity>
+                </View>
+              </View>
+              <TouchableOpacity
+                onPress={() => { goToPage((currentPageRef.current || 1) + 1); }}
+                disabled={totalPages <= 1 || currentPage >= totalPages}
+              >
+                <Ionicons name="arrow-forward-circle-outline" size={32} color={(totalPages <= 1 || currentPage >= totalPages) ? '#C0C0C0' : '#5C5C5C'} />
+              </TouchableOpacity>
+            </View>
+          )}
+
+          {/* Nav toggle button (bottom-right) */}
+          <TouchableOpacity
+            onPress={() => { setNavVisible(v => { const next = !v; if (next) setPageInput(String(currentPageRef.current || currentPage || 1)); return next; }); }}
+            style={[styles.navFab, { bottom: (navVisible ? 84 + 20 : 20) + insets.bottom, right: 20 }]}
+          >
+            <Ionicons name={navVisible ? 'chevron-down' : 'chevron-up'} size={28} color="#fff" />
+          </TouchableOpacity>
+
+          {/* Cursor-mode left/right tap zones */}
+          {mode === 'cursor' && (
+            <>
+              <GestureDetector gesture={leftTapGesture}>
+                <View style={[styles.edgeNavZone, { left: 0, width: screenWidth * 0.25 }]} />
+              </GestureDetector>
+              <GestureDetector gesture={rightTapGesture}>
+                <View style={[styles.edgeNavZone, { right: 0, width: screenWidth * 0.25 }]} />
+              </GestureDetector>
+            </>
+          )}
         </View>
 
-        {/* --- Page Pager --- */}
-        {totalPages > 0 && (
-          <View style={[styles.pagerBar, { paddingBottom: Math.max(10, insets.bottom) }] }>
-            <TouchableOpacity onPress={() => { const target = Math.max(1, (currentPageRef.current || 1) - 1); setIsPageSettling(true); if (settleTimer.current) clearTimeout(settleTimer.current); settleTimer.current = setTimeout(() => setIsPageSettling(false), 300); currentPageRef.current = target; setCurrentPage(target); pdfRef.current?.setPage(target); }} disabled={currentPage === 1}>
-              <Ionicons name="arrow-back-circle-outline" size={36} color={currentPage === 1 ? '#C0C0C0' : '#5C5C5C'} />
-            </TouchableOpacity>
-            <Slider
-              style={styles.pagerSlider}
-              minimumValue={1}
-              maximumValue={totalPages}
-              step={1}
-              value={currentPage}
-              onSlidingComplete={(value: number) => { setIsPageSettling(true); if (settleTimer.current) clearTimeout(settleTimer.current); settleTimer.current = setTimeout(() => setIsPageSettling(false), 300); currentPageRef.current = value; setCurrentPage(value); pdfRef.current?.setPage(value); }}
-              minimumTrackTintColor="#A0522D"
-              maximumTrackTintColor="#D3D3D3"
-              thumbTintColor="#FFFDF5"
-            />
-            <Text style={styles.pageIndicator}>{currentPage} / {totalPages}</Text>
-            <TouchableOpacity onPress={() => { const target = Math.min(totalPages, (currentPageRef.current || 1) + 1); setIsPageSettling(true); if (settleTimer.current) clearTimeout(settleTimer.current); settleTimer.current = setTimeout(() => setIsPageSettling(false), 300); currentPageRef.current = target; setCurrentPage(target); pdfRef.current?.setPage(target); }} disabled={currentPage === totalPages}>
-              <Ionicons name="arrow-forward-circle-outline" size={36} color={currentPage === totalPages ? '#C0C0C0' : '#5C5C5C'} />
-            </TouchableOpacity>
-          </View>
-        )}
+        {/* Pager moved outside viewer */}
       </View>
 
       {textRect && (
@@ -682,6 +802,70 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
           )}
         </Animated.View>
       </GestureDetector>
+
+      {/* --- Toggleable Page Pager (Top Overlay) --- */}
+      {navVisible && (
+        <View style={[styles.pagerBarTop, { paddingTop: Math.max(10, insets.top) }]}>
+          <TouchableOpacity
+            onPress={() => {
+              const target = (currentPageRef.current || 1) - 1;
+              goToPage(target);
+            }}
+            disabled={currentPage <= 1 || totalPages <= 1}
+          >
+            <Ionicons name="arrow-back-circle-outline" size={32} color={(currentPage <= 1 || totalPages <= 1) ? '#C0C0C0' : '#5C5C5C'} />
+          </TouchableOpacity>
+          <Slider
+            style={styles.pagerSlider}
+            minimumValue={1}
+            maximumValue={Math.max(1, totalPages)}
+            step={1}
+            value={Math.min(currentPage, Math.max(1, totalPages || 1))}
+            onSlidingComplete={(value: number) => { goToPage(value); }}
+            minimumTrackTintColor="#A0522D"
+            maximumTrackTintColor="#D3D3D3"
+            thumbTintColor="#FFFDF5"
+          />
+          <View style={styles.pageJumpRow}>
+            <Text style={styles.pageIndicator}>{currentPage} / {totalPages}</Text>
+            <View style={styles.pageJumpBox}>
+              <Text style={styles.pageJumpLabel}>Pg</Text>
+              <TextInput
+                value={pageInput}
+                onChangeText={(t) => setPageInput(t.replace(/[^0-9]/g, ''))}
+                keyboardType="numeric"
+                style={styles.pageInput}
+                placeholder="#"
+                maxLength={String(Math.max(1, totalPages)).length}
+              />
+              <TouchableOpacity
+                onPress={() => {
+                  const n = parseInt(pageInput || '1', 10);
+                  if (!isNaN(n)) goToPage(n);
+                }}
+                style={styles.pageGoBtn}
+                disabled={totalPages < 1}
+              >
+                <Ionicons name="checkmark-circle" size={22} color={totalPages < 1 ? '#C0C0C0' : '#8FBC8F'} />
+              </TouchableOpacity>
+            </View>
+          </View>
+          <TouchableOpacity
+            onPress={() => { goToPage((currentPageRef.current || 1) + 1); }}
+            disabled={totalPages <= 1 || currentPage >= totalPages}
+          >
+            <Ionicons name="arrow-forward-circle-outline" size={32} color={(totalPages <= 1 || currentPage >= totalPages) ? '#C0C0C0' : '#5C5C5C'} />
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* --- Nav Toggle Button --- */}
+      <TouchableOpacity
+        onPress={() => { setNavVisible(v => { const next = !v; if (next) setPageInput(String(currentPageRef.current || currentPage || 1)); return next; }); }}
+        style={[styles.navFab, { bottom: 20 + insets.bottom, right: 20 }]}
+      >
+        <Ionicons name={navVisible ? 'chevron-down' : 'chevron-up'} size={28} color="#fff" />
+      </TouchableOpacity>
 
       <TouchableOpacity onPress={onClose} style={[styles.closeBtn, { top: insets.top + 10 }]}>
         <Ionicons name="close-circle" size={38} color="rgba(0,0,0,0.4)" />
@@ -738,6 +922,10 @@ const styles = StyleSheet.create({
     },
     // --- Pager ---
     pagerBar: {
+      position: 'absolute',
+      left: 0,
+      right: 0,
+      bottom: 0,
       height: 84,
       backgroundColor: '#FFFDF5',
       flexDirection: 'row',
@@ -749,16 +937,88 @@ const styles = StyleSheet.create({
       zIndex: 100,
       elevation: 20,
     },
+    pagerBarTop: {
+      position: 'absolute',
+      left: 0,
+      right: 0,
+      top: 0,
+      height: 84,
+      backgroundColor: '#FFFDF5',
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: 12,
+      borderBottomWidth: 1,
+      borderBottomColor: '#EAE7DC',
+      zIndex: 300,
+      elevation: 30,
+    },
     pagerSlider: {
       flex: 1,
       height: 40,
       marginHorizontal: 10,
+    },
+    pageJumpRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8 as any,
     },
     pageIndicator: {
       width: 72,
       textAlign: 'center',
       fontSize: 14,
       color: '#555',
+    },
+    pageJumpBox: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      borderWidth: 1,
+      borderColor: '#EAE7DC',
+      borderRadius: 10,
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+      backgroundColor: '#fff',
+    },
+    pageJumpLabel: {
+      color: '#777',
+      marginRight: 4,
+      fontSize: 12,
+    },
+    pageInput: {
+      width: 48,
+      paddingVertical: 4,
+      paddingHorizontal: 6,
+      borderRadius: 6,
+      fontSize: 14,
+      color: '#333',
+      textAlign: 'center',
+      marginRight: 6,
+    },
+    pageGoBtn: {
+      paddingHorizontal: 4,
+      paddingVertical: 2,
+    },
+    navFab: {
+      position: 'absolute',
+      width: 52,
+      height: 52,
+      borderRadius: 26,
+      backgroundColor: '#A0522D',
+      justifyContent: 'center',
+      alignItems: 'center',
+      elevation: 10,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 5 },
+      shadowOpacity: 0.35,
+      shadowRadius: 6,
+      zIndex: 200,
+    },
+    edgeNavZone: {
+      position: 'absolute',
+      top: 0,
+      bottom: 0,
+      backgroundColor: 'transparent',
+      zIndex: 5,
     },
     fab: {
         width: 60,
