@@ -4,7 +4,6 @@ import Slider from '@react-native-community/slider';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Dimensions,
-  InteractionManager,
   Modal,
   StyleSheet,
   Text,
@@ -48,7 +47,7 @@ type TextNote = {
   page: number;
   fontSize: number;
 };
-type HistoryItem = { type: 'path' | 'text'; id: string };
+type HistoryItem = { type: 'path' | 'text'; id: string, page: number };
 type RectType = { x: number; y: number; width: number; height: number };
 
 // --- Helper Functions ---
@@ -89,21 +88,23 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
   const pdfRef = useRef<any>(null);
 
   // --- State ---
-  const [paths, setPaths] = useState<DrawPath[]>([]);
+  const [pathsByPage, setPathsByPage] = useState<{ [page: number]: DrawPath[] }>({});
   const currentPath = useSharedValue<string | null>(null);
   const [mode, setMode] = useState<'draw' | 'text' | 'erase' | 'cursor'>('cursor');
   const [drawColor, setDrawColor] = useState<string>('#CD5C5C');
   const activeColor = useRef<string>(drawColor);
-  const [texts, setTexts] = useState<TextNote[]>([]);
+  const [textsByPage, setTextsByPage] = useState<{ [page: number]: TextNote[] }>({});
   const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
   const [textInput, setTextInput] = useState<string>('');
   const [textRect, setTextRect] = useState<RectType | null>(null);
-  // Track which page a gesture started on to avoid mis-attribution when navigating mid-flow
-  const gesturePageRef = useRef<number>(1);
+  // Page ref is the single source of truth for saving annotations
+  const gesturePageRef = useRef<number>(1); // kept for compatibility but not relied upon
   const pendingTextPageRef = useRef<number | null>(null);
   const [pickerVisible, setPickerVisible] = useState<boolean>(false);
   const historyRef = useRef<HistoryItem[]>([]);
-  const STORAGE_KEY = `annotations-${pdfId}`;
+  const STORAGE_KEY_LEGACY = `annotations-${pdfId}`;
+  const STORAGE_KEY_ID = `annotations-id-${pdfId}`;
+  const STORAGE_KEY_URI = `annotations-uri-${uri}`;
 
   // --- Animated Shared Values for Gestures ---
   const textGestureRect = useSharedValue<RectType | null>(null);
@@ -113,7 +114,10 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
 
   // --- Page Navigation State ---
   const [currentPage, setCurrentPage] = useState<number>(1);
+  const currentPageRef = useRef<number>(1);
   const [totalPages, setTotalPages] = useState<number>(0);
+  const [isPageSettling, setIsPageSettling] = useState<boolean>(false);
+  const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // --- Sidebar State & Animation ---
   const [sidebarVisible, setSidebarVisible] = useState(false);
@@ -145,31 +149,58 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
 
   // Load and Save Annotations
   useEffect(() => {
+    let isMounted = true;
     const loadAnnotations = async () => {
       try {
-        const stored = await AsyncStorage.getItem(STORAGE_KEY);
-        if (stored) {
+        // Prefer ID-based key, then URI-based, then legacy
+        const [byId, byUri, legacy] = await Promise.all([
+          AsyncStorage.getItem(STORAGE_KEY_ID),
+          AsyncStorage.getItem(STORAGE_KEY_URI),
+          AsyncStorage.getItem(STORAGE_KEY_LEGACY),
+        ]);
+        const stored = byId || byUri || legacy;
+        if (stored && isMounted) {
           const { paths: storedPaths, texts: storedTexts, history: storedHistory } = JSON.parse(stored);
-          setPaths(storedPaths || []);
-          setTexts(storedTexts || []);
+          const pathsGroupedByPage = (storedPaths || []).reduce((acc: any, path: DrawPath) => {
+            acc[path.page] = [...(acc[path.page] || []), path];
+            return acc;
+          }, {});
+          const textsGroupedByPage = (storedTexts || []).reduce((acc: any, text: TextNote) => {
+              acc[text.page] = [...(acc[text.page] || []), text];
+              return acc;
+          }, {});
+          setPathsByPage(pathsGroupedByPage);
+          setTextsByPage(textsGroupedByPage);
           historyRef.current = storedHistory || [];
+          // If we didn't have ID key, write it now so future loads are fast
+          if (!byId) {
+            const dataToSave = JSON.stringify({ paths: storedPaths || [], texts: storedTexts || [], history: storedHistory || [] });
+            await AsyncStorage.setItem(STORAGE_KEY_ID, dataToSave);
+          }
         }
       } catch (e) {
         console.warn('Failed to load annotations', e);
       }
     };
+    loadAnnotations();
+    return () => { isMounted = false; };
+  }, [STORAGE_KEY_ID, STORAGE_KEY_URI, STORAGE_KEY_LEGACY]);
 
-    const task = InteractionManager.runAfterInteractions(() => {
-      loadAnnotations();
-    });
+  const persistAnnotations = React.useCallback(async () => {
+    try {
+      const allPaths = Object.values(pathsByPage).flat();
+      const allTexts = Object.values(textsByPage).flat();
+      const dataToSave = JSON.stringify({ paths: allPaths, texts: allTexts, history: historyRef.current });
+      await AsyncStorage.setItem(STORAGE_KEY_ID, dataToSave);
+      await AsyncStorage.setItem(STORAGE_KEY_URI, dataToSave);
+      await AsyncStorage.setItem(STORAGE_KEY_LEGACY, dataToSave);
+    } catch (e) {
+      console.warn('Save error', e);
+    }
+  }, [pathsByPage, textsByPage, STORAGE_KEY_ID, STORAGE_KEY_URI, STORAGE_KEY_LEGACY]);
 
-    return () => task.cancel();
-  }, [STORAGE_KEY]);
-
-  useEffect(() => {
-    const dataToSave = JSON.stringify({ paths, texts, history: historyRef.current });
-    AsyncStorage.setItem(STORAGE_KEY, dataToSave).catch(e => console.warn('Save error', e));
-  }, [paths, texts, STORAGE_KEY]);
+  useEffect(() => { void persistAnnotations(); }, [persistAnnotations]);
+  useEffect(() => { return () => { void persistAnnotations(); }; }, [persistAnnotations]);
 
 
   const undoLast = () => {
@@ -177,9 +208,21 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
     if (!lastAction) return;
 
     if (lastAction.type === 'path') {
-      setPaths(prev => prev.filter(p => p.id !== lastAction.id));
+        setPathsByPage(prev => {
+            const newPaths = { ...prev };
+            if (newPaths[lastAction.page]) {
+                newPaths[lastAction.page] = newPaths[lastAction.page].filter(p => p.id !== lastAction.id);
+            }
+            return newPaths;
+        });
     } else {
-      setTexts(prev => prev.filter(t => t.id !== lastAction.id));
+        setTextsByPage(prev => {
+            const newTexts = { ...prev };
+            if (newTexts[lastAction.page]) {
+                newTexts[lastAction.page] = newTexts[lastAction.page].filter(t => t.id !== lastAction.id);
+            }
+            return newTexts;
+        });
     }
   };
 
@@ -189,32 +232,43 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
     const textIdsToDelete = new Set<string>();
 
     points.forEach(point => {
-        paths.forEach(p => {
-            if (p.page === currentPage && pathContainsPoint(p.d, point.x, point.y)) {
+        (pathsByPage[currentPage] || []).forEach(p => {
+            if (pathContainsPoint(p.d, point.x, point.y)) {
                 pathIdsToDelete.add(p.id);
             }
         });
-        texts.forEach(t => {
-            if (t.page === currentPage && rectContainsPoint(t, point.x, point.y)) {
+        (textsByPage[currentPage] || []).forEach(t => {
+            if (rectContainsPoint(t, point.x, point.y)) {
                 textIdsToDelete.add(t.id);
             }
         });
     });
 
     if (pathIdsToDelete.size > 0) {
-        setPaths(current => current.filter(p => !pathIdsToDelete.has(p.id)));
+        setPathsByPage(current => ({
+            ...current,
+            [currentPage]: (current[currentPage] || []).filter(p => !pathIdsToDelete.has(p.id))
+        }));
     }
     if (textIdsToDelete.size > 0) {
-        setTexts(current => current.filter(t => !textIdsToDelete.has(t.id)));
+        setTextsByPage(current => ({
+            ...current,
+            [currentPage]: (current[currentPage] || []).filter(t => !textIdsToDelete.has(t.id))
+        }));
     }
   };
   
   // --- Gesture Handler Worklets ---
   const finishDrawing = (path: string) => {
     if (!path) return;
-    const id = Date.now().toString();
-    setPaths(prev => [...prev, { id, d: path, color: activeColor.current, page: gesturePageRef.current }]);
-    historyRef.current.push({ type: 'path', id });
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+    const page = gesturePageRef.current || currentPageRef.current || currentPage || 1;
+    const newPath = { id, d: path, color: activeColor.current, page };
+    setPathsByPage(prev => ({
+        ...prev,
+        [page]: [...(prev[page] || []), newPath]
+    }));
+    historyRef.current.push({ type: 'path', id, page });
     currentPath.value = null;
   };
   
@@ -235,23 +289,28 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
   };
 
   const updateTextSize = (id: string, width: number, height: number) => {
-    setTexts(current => current.map(t => t.id === id ? { ...t, width: Math.max(50, width), height: Math.max(40, height), fontSize: Math.max(10, height * FONT_SIZE_RATIO) } : t));
+    setTextsByPage(current => {
+        const newTexts = { ...current };
+        if (newTexts[currentPage]) {
+            newTexts[currentPage] = newTexts[currentPage].map(t => t.id === id ? { ...t, width: Math.max(50, width), height: Math.max(40, height), fontSize: Math.max(10, height * FONT_SIZE_RATIO) } : t);
+        }
+        return newTexts;
+    });
   };
 
   // --- Gestures ---
   const pdfDrawGesture = Gesture.Pan()
-    .enabled(mode !== 'cursor')
+    .enabled(!isPageSettling && mode !== 'cursor')
     .onBegin(e => {
-      // Pin page at the start of any drawing/text/erase gesture
-      gesturePageRef.current = currentPage;
+      // Pin to the page visible at gesture start and clear selection
+      gesturePageRef.current = currentPageRef.current;
       if (mode === 'draw') {
         runOnJS(setSelectedTextId)(null);
         currentPath.value = `M${e.x},${e.y}`;
       } else if (mode === 'text') {
         runOnJS(setSelectedTextId)(null);
         textGestureRect.value = { x: e.x, y: e.y, width: 0, height: 0 };
-        // Remember which page this text box belongs to
-        pendingTextPageRef.current = currentPage;
+        pendingTextPageRef.current = currentPageRef.current;
       } else if (mode === 'erase') {
         runOnJS(setSelectedTextId)(null);
         eraseGesturePoints.value = [{ x: e.x, y: e.y }];
@@ -279,14 +338,14 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
     .minDistance(0);
 
   const eraseTapGesture = Gesture.Tap()
-    .enabled(mode === 'erase')
+    .enabled(!isPageSettling && mode === 'erase')
     .onStart(e => {
       runOnJS(eraseAtPoints)([{ x: e.x, y: e.y }]);
     });
     
   const resizeGesture = Gesture.Pan()
     .onBegin(e => {
-        const text = texts.find(t => t.id === selectedTextId);
+        const text = (textsByPage[currentPage] || []).find(t => t.id === selectedTextId);
         if (text) {
             resizeDragContext.value = { x: e.x, y: e.y, width: text.width, height: text.height };
         }
@@ -364,16 +423,27 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
   const handleConfirmText = () => {
     if (!textRect) return;
 
+    const page = pendingTextPageRef.current ?? currentPageRef.current ?? currentPage ?? 1;
+
     if (selectedTextId) {
-      setTexts(prev => prev.map(t => t.id === selectedTextId ? { ...t, text: textInput } : t));
+        setTextsByPage(prev => {
+            const newTexts = { ...prev };
+            if (newTexts[page]) {
+                newTexts[page] = newTexts[page].map(t => t.id === selectedTextId ? { ...t, text: textInput } : t);
+            }
+            return newTexts;
+        });
     } else {
-      const id = Date.now().toString();
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
       const newText: TextNote = {
         id, text: textInput, ...textRect, color: '#3D3D3D',
-        width: Math.max(textRect.width, 50), height: Math.max(textRect.height, 40), page: pendingTextPageRef.current ?? currentPage, fontSize: DEFAULT_FONT_SIZE,
+        width: Math.max(textRect.width, 50), height: Math.max(textRect.height, 40), page: page, fontSize: DEFAULT_FONT_SIZE,
       };
-      setTexts(prev => [...prev, newText]);
-      historyRef.current.push({ type: 'text', id });
+      setTextsByPage(prev => ({
+          ...prev,
+          [page]: [...(prev[page] || []), newText]
+      }));
+      historyRef.current.push({ type: 'text', id, page });
     }
     setTextInput('');
     setTextRect(null);
@@ -396,13 +466,19 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
   };
 
   const updateTextPosition = (id: string, x: number, y: number) => {
-    setTexts(current => current.map(t => t.id === id ? { ...t, x, y } : t));
+    setTextsByPage(current => {
+        const newTexts = { ...current };
+        if (newTexts[currentPage]) {
+            newTexts[currentPage] = newTexts[currentPage].map(t => t.id === id ? { ...t, x, y } : t);
+        }
+        return newTexts;
+    });
   };
 
   const moveTextGesture = Gesture.Pan()
     .enabled(!!selectedTextId && mode === 'cursor')
     .onBegin(e => {
-      const t = texts.find(tx => tx.id === selectedTextId);
+      const t = (textsByPage[currentPage] || []).find(tx => tx.id === selectedTextId);
       if (t) {
         moveDragContext.value = { startX: e.x, startY: e.y, textX: t.x, textY: t.y };
       }
@@ -423,7 +499,13 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
     });
 
   const handleDeleteText = (id: string) => {
-    setTexts(ts => ts.filter(t => t.id !== id));
+    setTextsByPage(ts => {
+        const newTexts = { ...ts };
+        if (newTexts[currentPage]) {
+            newTexts[currentPage] = newTexts[currentPage].filter(t => t.id !== id);
+        }
+        return newTexts;
+    });
     setSelectedTextId(null);
   };
 
@@ -441,11 +523,17 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
             page={currentPage}
             horizontal
             enablePaging
-            onLoadComplete={(numberOfPages) => setTotalPages(numberOfPages)}
-            onPageChanged={(page) => setCurrentPage(page)}
+            onLoadComplete={(numberOfPages) => { setTotalPages(numberOfPages); }}
+            onPageChanged={(page) => {
+              currentPageRef.current = page;
+              setCurrentPage(page);
+              setIsPageSettling(true);
+              if (settleTimer.current) clearTimeout(settleTimer.current);
+              settleTimer.current = setTimeout(() => setIsPageSettling(false), 200);
+            }}
           />
           <Svg style={StyleSheet.absoluteFill} pointerEvents="box-none">
-            {paths.filter(p => p.page === currentPage).map(p => (
+            {(pathsByPage[currentPage] || []).map(p => (
               <Path key={p.id} d={p.d} stroke={p.color} strokeWidth={4} fill="none" strokeLinecap="round" strokeLinejoin="round" pointerEvents="none" />
             ))}
             <AnimatedPath
@@ -457,7 +545,7 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
               strokeLinejoin="round"
               pointerEvents="none"
             />
-            {texts.filter(t => t.page === currentPage).map((t) => (
+            {(textsByPage[currentPage] || []).map((t) => (
               <React.Fragment key={t.id}>
                 {selectedTextId === t.id ? (
                   <GestureDetector gesture={moveTextGesture}>
@@ -513,14 +601,14 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
             )}
           </Svg>
           <GestureDetector gesture={Gesture.Simultaneous(pdfDrawGesture, eraseTapGesture)}>
-            <View style={StyleSheet.absoluteFill} pointerEvents={mode === 'cursor' ? 'none' : 'auto'} />
+            <View style={StyleSheet.absoluteFill} pointerEvents={(!isPageSettling && mode !== 'cursor') ? 'auto' : 'none'} />
           </GestureDetector>
         </View>
 
         {/* --- Page Pager --- */}
         {totalPages > 0 && (
           <View style={[styles.pagerBar, { paddingBottom: Math.max(10, insets.bottom) }] }>
-            <TouchableOpacity onPress={() => pdfRef.current?.setPage(Math.max(1, currentPage - 1))} disabled={currentPage === 1}>
+            <TouchableOpacity onPress={() => { const target = Math.max(1, (currentPageRef.current || 1) - 1); setIsPageSettling(true); if (settleTimer.current) clearTimeout(settleTimer.current); settleTimer.current = setTimeout(() => setIsPageSettling(false), 300); currentPageRef.current = target; setCurrentPage(target); pdfRef.current?.setPage(target); }} disabled={currentPage === 1}>
               <Ionicons name="arrow-back-circle-outline" size={36} color={currentPage === 1 ? '#C0C0C0' : '#5C5C5C'} />
             </TouchableOpacity>
             <Slider
@@ -529,13 +617,13 @@ export const PdfAnnotator = ({ uri, pdfId, onClose }: Props) => {
               maximumValue={totalPages}
               step={1}
               value={currentPage}
-              onSlidingComplete={(value: number) => pdfRef.current?.setPage(value)}
+              onSlidingComplete={(value: number) => { setIsPageSettling(true); if (settleTimer.current) clearTimeout(settleTimer.current); settleTimer.current = setTimeout(() => setIsPageSettling(false), 300); currentPageRef.current = value; setCurrentPage(value); pdfRef.current?.setPage(value); }}
               minimumTrackTintColor="#A0522D"
               maximumTrackTintColor="#D3D3D3"
               thumbTintColor="#FFFDF5"
             />
             <Text style={styles.pageIndicator}>{currentPage} / {totalPages}</Text>
-            <TouchableOpacity onPress={() => pdfRef.current?.setPage(Math.min(totalPages, currentPage + 1))} disabled={currentPage === totalPages}>
+            <TouchableOpacity onPress={() => { const target = Math.min(totalPages, (currentPageRef.current || 1) + 1); setIsPageSettling(true); if (settleTimer.current) clearTimeout(settleTimer.current); settleTimer.current = setTimeout(() => setIsPageSettling(false), 300); currentPageRef.current = target; setCurrentPage(target); pdfRef.current?.setPage(target); }} disabled={currentPage === totalPages}>
               <Ionicons name="arrow-forward-circle-outline" size={36} color={currentPage === totalPages ? '#C0C0C0' : '#5C5C5C'} />
             </TouchableOpacity>
           </View>
