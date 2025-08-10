@@ -16,6 +16,7 @@ export default function TabLayout() {
       /* 👇 hide native header on every tab screen */
       screenOptions={{
         headerShown: false,
+        tabBarHideOnKeyboard: false,
         tabBarActiveTintColor: Colors[colorScheme ?? 'light'].tint,
         tabBarButton: HapticTab,
         tabBarBackground: TabBarBackground,
