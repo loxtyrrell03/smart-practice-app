@@ -43,3 +43,15 @@ These instructions apply to the entire repository unless a more specific `AGENTS
 
 - At each meaningful working milestone, inspect the diff, stage only relevant files, commit with a clear message, and push to the configured remote.
 - Do not rewrite shared history or force-push unless the user explicitly requests it.
+
+## 2026-09-10 app identity artwork
+
+- Practice Room now uses an ImageGen-created score-folio and piano-key emblem in
+  the existing russet, tan and paper palette. The Expo app/adaptive icons,
+  favicon and web-install PNGs share this artwork; the web manifest keeps the
+  existing root URL and names the installed app Practice Room.
+- Verification must include an isolated Expo web export and exact checks of the
+  180, 192 and 512 px outputs. Publishing the static build preserves browser
+  storage and requires no server restart. An already installed iOS web clip may
+  still need removal and re-adding at the same URL because iOS owns its saved
+  SpringBoard artwork cache.
