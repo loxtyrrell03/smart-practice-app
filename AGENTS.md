@@ -55,3 +55,6 @@ These instructions apply to the entire repository unless a more specific `AGENTS
   storage and requires no server restart. An already installed iOS web clip may
   still need removal and re-adding at the same URL because iOS owns its saved
   SpringBoard artwork cache.
+- Source commit `df8de78` is published. The icon-only static deployment kept the
+  Music Practice server process and browser storage intact; the touch-icon hash
+  matched through loopback and private HTTPS on the current `:10000` route.
